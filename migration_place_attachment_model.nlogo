@@ -122,7 +122,7 @@ to update-place-attachment
 
 end
 
-to calculate-utility [quality_of_life income]
+to-report calculate-utility [quality_of_life income where_i_am]
   ;; estimate utility as the sum across layers, multiplied by a function of place attachment, and scaled by attachment to other places.
   ;; could improve with a distance measure
   let utility 0
@@ -134,7 +134,7 @@ to calculate-utility [quality_of_life income]
     set attachment_distance_product attachment_distance_product + (table:get attachment i) * (table:get table:get distance_table where_i_am i)
   ]
   set utility utility / (1 + attachment_distance_product)
-  return utility
+  report utility
 end
 
 to get-utility
@@ -148,7 +148,7 @@ to get-utility
     set quality_of_life (runresult (table:get layer_functions "quality_life") place_mean_q place_sd_q)
     set income (runresult (table:get layer_functions "income") place_mean_i place_sd_i (count people with [resident_state_name = where_i_am]) place_a my_class)
   ]
-  let utility calculate-utility (quality_of_life income)
+  let utility calculate-utility quality_of_life income where_i_am
 
   add-layer-observation 0 quality_of_life where_i_am
   add-layer-observation 1 income where_i_am
@@ -159,7 +159,7 @@ to estimate-utility-from-layer-observation [where_i_am]
 
   let quality_of_life item 0 item 0 (table:get layer_observations where_i_am)
   let income item 0 item 1 (table:get layer_observations where_i_am)
-  let utility calculate-utility [quality_of_life] [income]
+  let utility calculate-utility quality_of_life income where_i_am
   add-observation utility where_i_am
 end
 
