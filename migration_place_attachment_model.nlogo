@@ -1,6 +1,22 @@
 extensions [table]
 
-globals [map_spread_factor max_color_spread layer_functions max_mean_q max_sd_q max_mean_i max_sd_i max_a max_group_diff place_list distance_table far_from_home at_home moves]
+globals [map_spread_factor max_color_spread layer_functions max_mean_q max_sd_q max_mean_i max_sd_i max_a
+  max_group_diff
+  place_list
+  distance_table
+  far_from_home
+  at_home moves
+  avg_move_distance     ; Average distance of moves
+  yearly_moves         ; Number of moves in the current year
+  total_income_change  ; Track total income changes from moves
+  total_qol_change    ; Track total quality of life changes from moves
+  cyclical_moves      ; Count of moves that return to a previous location
+  time_since_moves    ; List to track time between moves
+
+  ; For yearly tracking
+  year_start_tick    ; Track when each year starts
+  move_history       ; Table to store movement history
+]
 
 breed [people person]
 breed [places place]
@@ -80,6 +96,7 @@ to setup
 
   ]
 
+  setup-migration-tracking
 
 end
 
@@ -97,10 +114,21 @@ to go
   ask people [move]
 
   compute-metrics
+  update-migration-metrics
 
   tick
 
 
+end
+
+to-report agent-data-csv
+  file-open "agent_data.csv"
+  file-print "who,resident_state_name"
+  ask people [
+    file-print (word who ", " resident_state_name)
+  ]
+  file-close
+  report "Data exported to agent_data.csv"
 end
 
 to update-place-attachment
@@ -676,6 +704,66 @@ to compute-metrics
   set at_home count people with [resident_state_name = home_state_name]
 
 end
+
+to setup-migration-tracking
+  set yearly_moves 0
+  set year_start_tick 0
+  set move_history table:make
+  ask people [
+    table:put move_history who (list resident_state_name)
+  ]
+end
+
+to update-migration-metrics
+  ; Update yearly moves if we've completed a year (12 ticks)
+  if ticks mod 12 = 0 [
+    set yearly_moves moves
+    set year_start_tick ticks
+  ]
+
+  ; Track movement history and calculate metrics
+  ask people [
+    let current_location resident_state_name
+    let history table:get move_history who
+
+    ; If location changed, update metrics
+    if current_location != last history [
+      ; Add new location to history
+      table:put move_history who (lput current_location history)
+
+      ; Calculate and update metrics
+      update-move-metrics current_location history
+    ]
+  ]
+end
+
+to update-move-metrics [current_location history]
+  ; Calculate move distance
+  let prev_location last history
+  let move_dist distance one-of places with [name = prev_location]
+  set avg_move_distance (avg_move_distance * (moves - 1) + move_dist) / moves
+
+  ; Check for cyclical moves
+  if length history >= 2 and member? current_location but-last history [
+    set cyclical_moves cyclical_moves + 1
+  ]
+
+  ; Track quality of life and income changes
+  let old_qol mean [place_mean_q] of places with [name = prev_location]
+  let new_qol mean [place_mean_q] of places with [name = current_location]
+  let old_income mean [place_mean_i] of places with [name = prev_location]
+  let new_income mean [place_mean_i] of places with [name = current_location]
+
+  set total_qol_change total_qol_change + (new_qol - old_qol)
+  set total_income_change total_income_change + (new_income - old_income)
+end
+
+to-report get-avg-improvement
+  report (list
+    ifelse-value moves > 0 [total_income_change / moves][0]
+    ifelse-value moves > 0 [total_qol_change / moves][0]
+  )
+end
 @#$#@#$#@
 GRAPHICS-WINDOW
 210
@@ -972,7 +1060,7 @@ mean_attachment
 mean_attachment
 0
 1
-0.5
+0.0
 0.01
 1
 NIL
@@ -1481,7 +1569,7 @@ false
 Polygon -7500403 true true 270 75 225 30 30 225 75 270
 Polygon -7500403 true true 30 75 75 30 270 225 225 270
 @#$#@#$#@
-NetLogo 6.3.0
+NetLogo 6.4.0
 @#$#@#$#@
 @#$#@#$#@
 @#$#@#$#@
