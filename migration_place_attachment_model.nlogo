@@ -16,6 +16,14 @@ globals [map_spread_factor max_color_spread layer_functions max_mean_q max_sd_q 
   ; For yearly tracking
   year_start_tick    ; Track when each year starts
   move_history       ; Table to store movement history
+
+  ; Add experiment metrics
+  total_moves           ; Track total moves
+  total_satisfaction    ; Track satisfaction
+  total_uncertainty     ; Track uncertainty
+  move_distances       ; List of move distances
+  satisfaction_levels  ; List of satisfaction levels
+  utility_changes      ; List of utility changes
 ]
 
 breed [people person]
@@ -55,6 +63,7 @@ to setup
 
   setup-network
 
+  setup-experiment-metrics
 
 
   ;;define place parameters
@@ -129,6 +138,17 @@ to-report agent-data-csv
   ]
   file-close
   report "Data exported to agent_data.csv"
+end
+
+; Add reporters for Python interface
+to-report get-experiment-metrics
+  report (list
+    total_moves
+    mean move_distances
+    mean satisfaction_levels
+    mean utility_changes
+    count people with [uncertain?]
+  )
 end
 
 to update-place-attachment
@@ -331,7 +351,8 @@ to setup-agents
     set layer_observations copy-table layer_observation_table
     set decisionType (ifelse-value (random-float 1 < pConsumat) [ "consumat"] [ "maximize"])
     set target_place resident_state_name
-
+    set uncertain? FALSE
+    set satisfied? FALSE
   ]
 
 end
@@ -649,11 +670,22 @@ end
 to decide-look-to-peers ; look at people in a similar position (same region? same satisfaction/utility?)
 end
 
+; to decide-deliberate-move
+;   let place_scores all-place-observation-weighted-average 0.5
+;   let max_i position max place_scores place_scores
+;   let max_place item max_i place_list
+;   set target_place max_place ; probably want to make this a probability rather than just setting a target place
+; end
+
+; Optimize move and decision logic
 to decide-deliberate-move
-  let place_scores all-place-observation-weighted-average 0.5
-  let max_i position max place_scores place_scores
-  let max_place item max_i place_list
-  set target_place max_place ; probably want to make this a probability rather than just setting a target place
+  let cached_scores all-place-observation-weighted-average 0.5
+  set target_place item (position max cached_scores cached_scores) place_list
+
+  ; Track metrics when decision made
+  let old_utility mean [get-satisfaction] of people
+  let new_utility mean [get-satisfaction] of people with [target_place != resident_state_name]
+  set utility_changes lput (new_utility - old_utility) utility_changes
 end
 
 to decide-social-comparison ; look at friends
@@ -662,31 +694,49 @@ end
 to move
 
   (ifelse moveMethod = "patch" [
+    let old_loc resident_state_name
     if resident_state_name != target_place [
       face one-of places with [name = [target_place] of myself]
       forward 1
       set resident_state_name [state_name] of patch-here
       set moves moves + 1
+      set total_moves total_moves + 1
+      set move_distances lput (distance one-of places with [name = old_loc]) move_distances
+      set satisfaction_levels lput get-satisfaction satisfaction_levels
     ]
 
     ]
     moveMethod = "place" [
+      let old_loc resident_state_name
       let myTarget target_place
       if resident_state_name != myTarget and any? patches with [state_name = myTarget] [
         set resident_state_name myTarget
         move-to one-of patches with [state_name = myTarget]
         set moves moves + 1
+            ; Update metrics in batch
+        set total_moves total_moves + 1
+        set move_distances lput (distance one-of places with [name = old_loc]) move_distances
+        set satisfaction_levels lput get-satisfaction satisfaction_levels
       ]
   ])
-
-
 end
-
 
 to reset-metrics
   set moves 0
   set far_from_home 0
   set at_home 0
+  set total_satisfaction 0
+  set total_uncertainty 0
+end
+
+; Setup experiment metrics
+to setup-experiment-metrics
+  set total_moves 0
+  set move_distances []
+  set satisfaction_levels []
+  set utility_changes []
+  set total_satisfaction 0
+  set total_uncertainty 0
 end
 
 to compute-metrics
@@ -741,8 +791,11 @@ to update-move-metrics [current_location history]
   ; Calculate move distance
   let prev_location last history
   let move_dist distance one-of places with [name = prev_location]
-  set avg_move_distance (avg_move_distance * (moves - 1) + move_dist) / moves
-
+  ifelse moves > 0 [
+    set avg_move_distance (avg_move_distance * (moves - 1) + move_dist) / moves
+  ][
+    set avg_move_distance 0
+  ]
   ; Check for cyclical moves
   if length history >= 2 and member? current_location but-last history [
     set cyclical_moves cyclical_moves + 1
