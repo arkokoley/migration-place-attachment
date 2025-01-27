@@ -177,6 +177,7 @@ class ComplexityExperiment:
             })
         
         effects_df = pd.DataFrame(effects)
+        self.effects_df = effects_df  # Store full effects in class attribute
         
         # Find optimal parameter combinations
         best_params = effects_df.nlargest(5, 'composite_effect')
@@ -201,6 +202,16 @@ class ComplexityExperiment:
         
         return best_params, plt.gcf()
 
+    def export_effects_to_csv(self, csv_path='effects.csv'):
+        """
+        Export the full parameter effects DataFrame to a CSV file.
+        """
+        if not hasattr(self, 'effects_df'):
+            # If effects_df isn't set, run analysis first
+            self.analyze_parameter_effects()
+        self.effects_df.to_csv(csv_path, index=False)
+        print(f"Effects exported to {csv_path}")
+
 if __name__ == "__main__":
   # Initialize with your NetLogo model path
   model_path = "./migration_place_attachment_model.nlogo"
@@ -211,12 +222,18 @@ if __name__ == "__main__":
   exp.results = pd.read_json('results.json')
   # Analyze the data
   summary = exp.analyze_results()
+  exp.export_effects_to_csv()
   print(summary)
 
   # Plot and display
   exp.plot_complexity_effects()
   # Find optimal parameters
-  best_params, fig = exp.analyze_parameter_effects()
-  print("\nTop Parameter Combinations:")
-  print(best_params)
+#   best_params, fig = exp.analyze_parameter_effects()
+  best_params, _ = exp.analyze_parameter_effects()
+  best_params.to_csv('analysed.csv', index=False)
+
+  # Sort by complexity (ascending) and pick the first row
+  best_params_sorted = best_params.sort_values(["admin_levels","mean_parts","sd_parts"])
+  simplest_landscape = best_params_sorted.iloc[0]
+  print("Simplest landscape:", simplest_landscape)
   plt.show()
