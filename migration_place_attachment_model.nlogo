@@ -144,11 +144,25 @@ end
 to-report get-experiment-metrics
   report (list
     total_moves
-    mean move_distances
-    mean satisfaction_levels
-    mean utility_changes
+    ifelse-value empty? move_distances [0] [mean move_distances]
+    ifelse-value empty? satisfaction_levels [0] [mean satisfaction_levels]
+    ifelse-value empty? utility_changes [0] [mean utility_changes]
     count people with [uncertain?]
   )
+end
+
+to-report get-agent-data
+  let agent-data []
+  ask people [
+    set agent-data lput (list 
+      who 
+      resident_state_name
+      home_state_name
+      satisfied?
+      uncertain?
+      attachment_level) agent-data
+  ]
+  report agent-data
 end
 
 to update-place-attachment
@@ -737,6 +751,10 @@ to setup-experiment-metrics
   set utility_changes []
   set total_satisfaction 0
   set total_uncertainty 0
+  set yearly_moves 0
+  set avg_move_distance 0
+  set time_since_moves []
+  set move_history table:make
 end
 
 to compute-metrics

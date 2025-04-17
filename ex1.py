@@ -8,19 +8,20 @@ import seaborn as sns
 
 class ExperimentConfig:
     # Landscape parameters
-    admin_levels: list = (2, 3)
-    mean_parts: list = (2, 3, 4)
-    sd_parts: list = (0.5, 1.0)
+    admin_levels: list = (3)
+    mean_parts: list = (2)
+    sd_parts: list = (1.0)
     
     # Agent parameters
-    population_sizes: list = (100, 200, 500)
-    attachment_levels: list = np.linspace(0, 1, 5)
+    population_sizes: list = (500)
+    attachment_levels: list = np.linspace(0, 1, 10)
     
     def get_parameter_combinations(self):
-        return [(a, m, s, p) for a in self.admin_levels 
-                            for m in self.mean_parts
-                            for s in self.sd_parts
-                            for p in self.population_sizes]
+        # return [(a, m, s, p) for a in self.admin_levels 
+        #                     for m in self.mean_parts
+        #                     for s in self.sd_parts
+        #                     for p in self.population_sizes]
+        return [(3,2,1.0,500)]
 
 def initialize_worker(model_path):
     """Initialize NetLogo instance for each worker"""
@@ -66,60 +67,89 @@ class ComplexityExperiment:
                     
     def analyze_results(self):
         """Analyze experiment results with proper reshaping"""
-        # df = pd.DataFrame(self.results)
-        # df.to_json('results.json')
         df = pd.read_json('results.json')
-        
-        # Ensure attachment levels are properly formatted
         df['attachment'] = pd.to_numeric(df['attachment'])
         
-        # Group by complexity parameters
+        # Group by complexity parameters  
         grouped = df.groupby(['admin_levels', 'mean_parts', 'sd_parts'])
         
-        # Calculate correlations between PA and outcomes
+        # Calculate correlations with place attachment using core metrics
         correlations = grouped.apply(lambda x: pd.Series({
             'moves_corr': x['total_moves'].corr(x['attachment']),
-            'distance_corr': x['avg_move_distance'].corr(x['attachment']),
+            'distance_corr': x['avg_move_distance'].corr(x['attachment']), 
             'satisfaction_corr': x['avg_satisfaction'].corr(x['attachment']),
-            'utility_corr': x['avg_utility_change'].corr(x['attachment'])
+            'utility_corr': x['avg_utility_change'].corr(x['attachment']),
+            'uncertain_corr': x['num_uncertain'].corr(x['attachment'])
         }))
         
+        # Add optional metrics if they exist in the data
+        optional_metrics = {
+            'yearly_moves': 'yearly_moves_corr',
+            'TimeStepsAwayFromHome': 'time_away_corr',
+            'AvgDistanceAwayFromHome': 'avg_distance_away_corr',
+            'FractionMovesHome': 'fraction_home_corr',
+            'TotalDistanceTraveled': 'total_distance_corr',
+            'NumReturnsToHome': 'returns_home_corr'
+        }
+        
+        for metric, corr_name in optional_metrics.items():
+            if metric in df.columns:
+                correlations[corr_name] = grouped.apply(
+                    lambda x: x[metric].corr(x['attachment'])
+                )
+            else:
+                correlations[corr_name] = np.nan
+                
         return correlations.reset_index()
     
     def plot_complexity_effects(self):
         """Visualize PA effects across complexity levels"""
         effects = self.analyze_results()
         
-        # Create figure with subplots
-        fig, axes = plt.subplots(2, 2, figsize=(15, 12))
-        metrics = ['moves_corr', 'distance_corr', 'satisfaction_corr', 'utility_corr']
-        titles = ['Moves', 'Move Distance', 'Satisfaction', 'Utility Change']
+        # Create figure with more subplots to accommodate new metrics
+        fig, axes = plt.subplots(3, 4, figsize=(20, 15))
+        
+        metrics = [
+            'moves_corr', 'distance_corr', 'satisfaction_corr', 'utility_corr',
+            'time_away_corr', 'avg_distance_away_corr', 'fraction_home_corr',
+            'avg_distance_move_corr', 'total_distance_corr', 'returns_home_corr'
+        ]
+        
+        titles = [
+            'Moves', 'Move Distance', 'Satisfaction', 'Utility Change',
+            'Time Away from Home', 'Avg Distance from Home', 'Fraction Moves Home',
+            'Avg Distance per Move', 'Total Distance', 'Returns to Home'
+        ]
         
         # Create heatmap for each metric
-        for idx, (ax, metric, title) in enumerate(zip(axes.flat, metrics, titles)):
-            # Reshape data for heatmap
-            pivot_data = effects.pivot_table(
-                values=metric,
-                index='mean_parts',
-                columns='admin_levels',
-                aggfunc='mean'
-            )
-            
-            # Generate heatmap
-            sns.heatmap(
-                pivot_data, 
-                ax=ax,
-                center=0,
-                cmap='RdBu_r',
-                annot=True,
-                fmt='.2f',
-                cbar_kws={'label': 'Correlation'}
-            )
-            
-            ax.set_title(f'PA Effect on {title}')
-            ax.set_xlabel('Admin Levels')
-            ax.set_ylabel('Mean Parts')
+        for idx, (metric, title) in enumerate(zip(metrics, titles)):
+            ax = axes[idx // 4, idx % 4] if idx < len(metrics) else None
+            if ax is not None:
+                pivot_data = effects.pivot_table(
+                    values=metric,
+                    index='mean_parts',
+                    columns='admin_levels',
+                    aggfunc='mean'
+                )
+                
+                sns.heatmap(
+                    pivot_data, 
+                    ax=ax,
+                    center=0,
+                    cmap='RdBu_r',
+                    annot=True,
+                    fmt='.2f',
+                    cbar_kws={'label': 'Correlation'}
+                )
+                
+                ax.set_title(f'PA Effect on {title}')
+                ax.set_xlabel('Admin Levels')
+                ax.set_ylabel('Mean Parts')
         
+        # Remove empty subplots if any
+        for idx in range(len(metrics), 12):
+            fig.delaxes(axes[idx // 4, idx % 4])
+            
         plt.tight_layout()
         return fig
 
@@ -157,10 +187,10 @@ class ComplexityExperiment:
         for _, group in df.groupby(params):
             # Calculate effect sizes for each metric
             pa_effects = {
-                'moves': np.corrcoef(group['total_moves'], group['attachment'])[0,1],
-                'distance': np.corrcoef(group['avg_move_distance'], group['attachment'])[0,1],
-                'satisfaction': np.corrcoef(group['avg_satisfaction'], group['attachment'])[0,1],
-                'utility': np.corrcoef(group['avg_utility_change'], group['attachment'])[0,1]
+                'moves': np.corrcoef(group['total_moves'], group['mean_attachment'])[0,1],
+                'distance': np.corrcoef(group['avg_move_distance'], group['mean_attachment'])[0,1],
+                'satisfaction': np.corrcoef(group['avg_satisfaction'], group['mean_attachment'])[0,1],
+                'utility': np.corrcoef(group['avg_utility_change'], group['mean_attachment'])[0,1]
             }
             
             # Calculate composite effect size
@@ -218,18 +248,18 @@ if __name__ == "__main__":
   exp = ComplexityExperiment(model_path)
 
   # Run experiments with desired number of repeats
-#   exp.run_parallel_experiments(num_processes=8, runs_per_combo=1)
-  exp.results = pd.read_json('results.json')
+  exp.run_parallel_experiments(num_processes=8, runs_per_combo=1)
+#   exp.results = pd.read_json('results.json')
   # Analyze the data
   summary = exp.analyze_results()
   exp.export_effects_to_csv()
   print(summary)
 
   # Plot and display
-  exp.plot_complexity_effects()
+#   exp.plot_complexity_effects()
   # Find optimal parameters
 #   best_params, fig = exp.analyze_parameter_effects()
-  best_params, _ = exp.analyze_parameter_effects()
+#   best_params, _ = exp.analyze_parameter_effects()
   best_params.to_csv('analysed.csv', index=False)
 
   # Sort by complexity (ascending) and pick the first row
