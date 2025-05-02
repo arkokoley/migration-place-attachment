@@ -2,15 +2,18 @@ import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
 import seaborn as sns
-from pynetlogo import NetLogoLink
 import os
 from datetime import datetime
-import networkx as nx
-from typing import List, Dict
+from typing import List, Dict, Any
 import numpy as np
 import matplotlib
 import itertools
-matplotlib.use('Agg')  # Set the backend to non-interactive before other imports
+from base_experiment import BaseExperiment
+from sklearn.ensemble import RandomForestRegressor
+import scipy.io as sio # Keep for .mat export
+from matplotlib.patches import Patch # Keep for RF plot legend
+
+matplotlib.use('Agg')  # Set the backend to non-interactive
 
 class PlaceConfig:
     mean_quality: float
@@ -71,572 +74,508 @@ class LandscapeGenerator:
             new_prefix = prefix + [i]
             self._generate_places(new_prefix, level + 1, places, base_config)
 
-class MigrationAnalyzer:
-    def __init__(self, model_path):
-        """Initialize the NetLogo connection and setup basic parameters."""
-        try:
-            self.netlogo = NetLogoLink(gui=True)  # Change to headless mode
-            self.netlogo.load_model(model_path)
-            self.results = {}
-        except Exception as e:
-            print(f"Error initializing NetLogo: {e}")
-            raise
-        
-    def setup_experiment(self, params=None):
-        """Setup experiment parameters with defaults."""
-        self.params = params or {
-            'mean_attachment': np.linspace(0, 1, 3),  # Reduced from 5 to 3
-            'sd_attachment': np.linspace(0.1, 0.5, 2),  # Reduced from 3 to 2
-            'attachment_form_rate': np.linspace(0.01, 0.05, 2),
-            'attachment_decay_rate': np.linspace(0.01, 0.05, 2),
-            'initial_attachment': np.linspace(0.2, 0.8, 2),
-            'mean_pInitiate': np.linspace(0.1, 0.5, 2),
-            'sd_pInitiate': np.linspace(0.05, 0.2, 2),
-            'pConsumat': [0.2, 0.6]  # Reduced to just low/high
+class ParameterSweepExperiment(BaseExperiment):
+    """Runs a parameter sweep experiment for the migration model."""
+
+    def __init__(self, model_path: str):
+        super().__init__(model_path)
+        # Define MINIMAL parameter ranges specific to testing shocks
+        self.param_ranges = {
+            # --- Varied Parameters ---
+            'individual_shock_probability': [0, 0.01], # Baseline vs Shock
+            'mean_attachment': [0.2, 0.8],          # Low vs High baseline attachment
+            'attachment_shock_magnitude': [0.1],      # Fixed shock strength
+
+            # --- Fixed Parameters (Ensure these match reasonable defaults) ---
+            'sd_attachment': [0.2],
+            'attachment_form_rate': [0.019],
+            'attachment_decay_rate': [0.02],
+            'initial_attachment': [0.5],
+            'mean_pInitiate': [0.3],
+            'sd_pInitiate': [0.1],
+            'pConsumat': [0.4],
+            # Add other necessary fixed params if they are not default in NetLogo
+            # 'initial_population': [500], # Example
         }
-        
-        # Initialize metrics dictionary with additional metrics
-        self.metrics = {
-            'move_distances': [],
-            'yearly_moves': [],
-            'income_improvement': [],
-            'qol_improvement': [],
-            'cyclical_moves': [],
-            'time_to_next_move': [],
-            'attachment_level': [],
-            'mean_pInitiate': [],
-            'pConsumat': [],
-            'avg_satisfaction': [],
-            'num_uncertain': [],
-            'avg_move_distance': [],
-            'total_moves': [],
-            'satisfaction_levels': [],
-            'utility_changes': [],
-            'total_satisfaction': [],
-            'total_uncertainty': [],
-            'TimeStepsAwayFromHome': [],
-            'AvgDistanceAwayFromHome': [],
-            'FractionMovesHome': [],
-            'TotalDistanceTraveled': [],
-            'NumReturnsToHome': [],
-            'numReturns': [],
-            'distanceTraveled': [],
-            'totalMoves': [],
-            'avgDistancePerMove': [],
-            'fractionMovesHome': [],
-            'avgDistanceAwayFromHome': [],
-            'timeStepsAwayFromHome': [],
-            'numAgents': []
+
+    def _define_parameter_sets(self) -> List[Dict[str, Any]]:
+        """Generate parameter combinations for the sweep."""
+        param_names = list(self.param_ranges.keys())
+        # Ensure all values are lists for itertools.product
+        param_values = [v if isinstance(v, (list, np.ndarray)) else [v] for v in self.param_ranges.values()]
+        combinations = list(itertools.product(*param_values))
+        return [dict(zip(param_names, combo)) for combo in combinations]
+
+    def _get_metrics_to_collect(self) -> Dict[str, str]:
+        """Define MINIMAL metrics for testing shocks."""
+        return {
+            # Core metrics from get-experiment-metrics
+            'total_moves': 'total_moves', # General activity indicator
+            # RCT metrics are essential
+            'avg_satisfaction_shocked': '(item 0 get-metrics-by-shock-status)',
+            'avg_satisfaction_not_shocked': '(item 1 get-metrics-by-shock-status)',
+            'avg_moves_shocked': '(item 2 get-metrics-by-shock-status)',
+            'avg_moves_not_shocked': '(item 3 get-metrics-by-shock-status)',
+            # Optional: Add avg_satisfaction for context if needed
+            # 'avg_satisfaction': 'ifelse-value empty? satisfaction_levels [0] [mean satisfaction_levels]',
         }
-        
-    def setup_landscape(self, landscape_config: PlaceConfig):
-        """Setup landscape with specific configuration"""
-        generator = LandscapeGenerator(
-            admin_levels=2,  # Start simple
-            mean_parts=2,    # Few subdivisions
-            sd_parts=0.5     # Low variation
-        )
-        
-        place_configs = generator.generate_place_configs(landscape_config)
-        
-        # Set NetLogo parameters
-        for place_name, config in place_configs.items():
-            self.netlogo.command(f'''
-                ask places with [name = "{place_name}"] [
-                    set place_mean_q {config.mean_quality}
-                    set place_sd_q {config.sd_quality}
-                    set place_mean_i {config.mean_income}
-                    set place_sd_i {config.sd_income}
-                    set place_a {config.capacity}
-                ]
-            ''')
 
-    def run_parameter_sweep(self, num_ticks=50, runs_per_combo=3):
-        """Run experiments for all parameter combinations and save comprehensive metrics."""
-        results = []
-        all_inputs = []
-        all_metrics = []
-        
-        # Generate parameter combinations
-        param_combinations = self._generate_param_combinations()
-        
-        for params in param_combinations:
-            for run in range(runs_per_combo):
-                # Run single experiment with parameter combination
-                run_metrics = self.run_single_experiment(params=params, ticks=num_ticks)
-                
-                # Collect input parameters in order
-                input_values = [
-                    params['mean_attachment'],
-                    params.get('sd_attachment', 0.2),
-                    params.get('attachment_form_rate', 0.019),
-                    params.get('attachment_decay_rate', 0.02),
-                    params.get('initial_attachment', 0.5),
-                    params['mean_pInitiate'],
-                    params.get('sd_pInitiate', 0.1),
-                    params['pConsumat'],
-                ]
-                
-                # Collect metrics in order
-                metric_values = [
-                    run_metrics['total_moves'],
-                    run_metrics['avg_move_distance'],
-                    run_metrics['avg_satisfaction'],
-                    run_metrics['timeStepsAwayFromHome'],
-                    run_metrics['fractionMovesHome'],
-                    run_metrics['avg_utility_change']
-                ]
-                
-                all_inputs.append(input_values)
-                all_metrics.append(metric_values)
-                results.append({**run_metrics, 'run_id': run, **params})
-        
-        # Save results in both formats
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        
-        # Save detailed CSV
-        pd.DataFrame(results).to_csv(f'migration_results_detailed_{timestamp}.csv')
-        
-        # Save MATLAB format for random forest analysis
-        import scipy.io as sio
-        sio.savemat(f'PA_Sensitivity_Results_{timestamp}.mat', {
-            'allInputs': np.array(all_inputs),
-            'allMetrics': np.array(all_metrics),
-            'inputNames': np.array([
-                'placeAttachmentMean',
-                'placeAttachmentSD',
-                'attachmentFormRate',
-                'attachmentDecayRate',
-                'initialAttachment',
-                'pInitiateMean',
-                'pInitiateSD',
-                'pConsumat'
-            ]),
-            'metricNames': np.array([
-                'totalMoves',
-                'avgMoveDistance',
-                'avgSatisfaction',
-                'timeAwayFromHome',
-                'fractionMovesHome',
-                'utilityChange'
-            ])
-        })
-        
-        return pd.DataFrame(results)
+    def analyze_results(self, results_df: pd.DataFrame, output_dir: str):
+        """Perform minimal analysis (or none) for prototyping."""
+        print("Skipping Random Forest analysis for prototype.")
+        # rf_results = self._analyze_random_forest(results_df, output_dir)
+        # if rf_results:
+        #      print("Random Forest analysis complete.")
+        # else:
+        #      print("Random Forest analysis skipped or failed.")
 
-    def run_single_experiment(self, params, ticks=60):
-        """Run single experiment with given parameters."""
+        print("Skipping MATLAB export for prototype.")
+        # self._export_for_matlab(results_df, output_dir)
+        # print("MATLAB export complete.")
+
+        # No other analysis needed for minimal prototype
+
+    def visualize_results(self, results_df: pd.DataFrame, output_dir: str):
+        """Generate minimal visualizations for prototyping."""
+        print("Skipping Place Attachment effect plots for prototype.")
+        # try:
+        #     pa_fig = self._visualize_place_attachment_effects(results_df)
+        #     pa_fig.savefig(os.path.join(output_dir, 'place_attachment_effects.png'))
+        #     plt.close(pa_fig)
+        # except Exception as e:
+        #     print(f"Error generating PA effect plots: {e}")
+
+        print("Skipping Migration Pattern plots for prototype.")
+        # try:
+        #     mig_fig = self._analyze_migration_patterns(results_df)
+        #     mig_fig.savefig(os.path.join(output_dir, 'migration_patterns.png'))
+        #     plt.close(mig_fig)
+        # except Exception as e:
+        #     print(f"Error generating migration pattern plots: {e}")
+
+        print("Generating Shock RCT effect plots...") # Keep this one
         try:
-            # Initialize metrics with default values
-            experiment_metrics = {
-                'move_distances': [],
-                'yearly_moves': 0,
-                'income_improvement': 0,
-                'qol_improvement': 0,
-                'cyclical_moves': 0,
-                'time_to_next_move': 0,
-                'attachment_level': params.get('mean_attachment', 0),
-                'mean_pInitiate': params.get('mean_pInitiate', 0),
-                'pConsumat': params.get('pConsumat', 0),
-                'avg_satisfaction': 0,
-                'num_uncertain': 0,
-                'avg_move_distance': 0,
-                'total_moves': 0,
-                'satisfaction_levels': [],
-                'utility_changes': [],
-                'total_satisfaction': 0,
-                'total_uncertainty': 0,
-                'TimeStepsAwayFromHome': 0,
-                'AvgDistanceAwayFromHome': 0,
-                'FractionMovesHome': 0,
-                'TotalDistanceTraveled': 0,
-                'NumReturnsToHome': 0,
-                'avg_utility_change': 0  # Add default value
-            }
-
-            # Set parameters and initialize
-            for param, value in params.items():
-                self.netlogo.command(f'set {param} {value}')
-            
-            self.netlogo.command('setup')
-
-            # Track metrics at each tick
-            for t in range(ticks):
-                self.netlogo.command('go')
-                
-                # Get metrics from NetLogo with error handling
-                try:
-                    moves = float(self.netlogo.report('moves'))
-                    moves = moves if not np.isnan(moves) else 0
-                    far_from_home = float(self.netlogo.report('far_from_home'))
-                    far_from_home = far_from_home if not np.isnan(far_from_home) else 0
-                    at_home = float(self.netlogo.report('at_home'))
-                    at_home = at_home if not np.isnan(at_home) else 0
-                    total_people = float(self.netlogo.report('count people'))
-                    total_people = total_people if not np.isnan(total_people) else 1
-                except Exception as e:
-                    print(f"Error getting NetLogo metrics: {e}")
-                    moves = far_from_home = at_home = 0
-                    total_people = 1
-                
-                # Update metrics
-                experiment_metrics['total_moves'] += moves
-                experiment_metrics['TimeStepsAwayFromHome'] += far_from_home
-                experiment_metrics['FractionMovesHome'] = at_home / total_people if total_people > 0 else 0
-                
-                # Get improvement metrics with error handling
-                try:
-                    improvements = self.netlogo.report('get-avg-improvement')
-                    experiment_metrics['income_improvement'] += improvements[0]
-                    experiment_metrics['qol_improvement'] += improvements[1]
-                except Exception as e:
-                    print(f"Error getting improvement metrics: {e}")
-                
-            # Get final metrics with error handling
-            try:
-                final_metrics = self.netlogo.report('get-experiment-metrics')
-                if final_metrics is not None and len(final_metrics) >= 5:
-                    # Convert any numpy arrays to floats and handle NaN values
-                    total_moves = float(final_metrics[0]) if not np.isnan(final_metrics[0]) else 0
-                    avg_move_dist = float(final_metrics[1]) if not np.isnan(final_metrics[1]) else 0
-                    avg_satis = float(final_metrics[2]) if not np.isnan(final_metrics[2]) else 0
-                    avg_util = float(final_metrics[3]) if not np.isnan(final_metrics[3]) else 0
-                    num_uncert = float(final_metrics[4]) if not np.isnan(final_metrics[4]) else 0
-                    
-                    experiment_metrics.update({
-                        'total_moves': total_moves,
-                        'avg_move_distance': avg_move_dist,
-                        'avg_satisfaction': avg_satis,
-                        'avg_utility_change': avg_util,
-                        'num_uncertain': num_uncert
-                    })
-            except Exception as e:
-                print(f"Error getting final metrics: {e}")
-            
-            # Calculate yearly_moves
-            experiment_metrics['yearly_moves'] = experiment_metrics['total_moves'] / (ticks / 12)
-
-            return experiment_metrics
-
+            rct_fig = self._visualize_shock_effect_rct(results_df)
+            if rct_fig: # Check if figure was created (might return None on error/no data)
+                 rct_fig.savefig(os.path.join(output_dir, 'shock_rct_effect.png'))
+                 plt.close(rct_fig)
+            else:
+                 print("RCT plot not generated (likely missing data or error).")
         except Exception as e:
-            print(f"Error in experiment: {e}")
-            return {k: 0 for k in experiment_metrics.keys()} | {'success': False, **params}
+            print(f"Error generating RCT plots: {e}")
 
-    def run_experiments(self, n_iterations=5):
-        """Run experiments and generate all visualizations."""
-        if 'mean_attachment' not in self.params:
-            raise ValueError("No mean_attachment parameter found in experiment setup")
-            
-        results = []
-        param_combinations = self._generate_param_combinations()
-        
-        for params in param_combinations:
-            level_results = []
-            for _ in range(n_iterations):
-                result = self.run_single_experiment(params)
-                # Add parameters to result
-                result.update(params)
-                level_results.append(result)
-            
-            # Average results across iterations
-            avg_result = {}
-            for k in level_results[0].keys():
-                values = [r.get(k, 0) for r in level_results]
-                if isinstance(values[0], (list, np.ndarray)):
-                    # For list metrics, take the mean of each position
-                    avg_result[k] = np.mean(values, axis=0) if values else []
-                else:
-                    # For numeric metrics, take simple mean
-                    avg_result[k] = float(np.mean([v for v in values if v is not None]))
-            
-            results.append(avg_result)
-        
-        # Create DataFrame from results
-        results_df = pd.DataFrame(results)
-        
-        # Generate visualizations
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        output_dir = f'results_{timestamp}'
-        os.makedirs(output_dir, exist_ok=True)
-        
-        # Place attachment effects
-        pa_fig = self.visualize_place_attachment_effects(results_df)
-        pa_fig.savefig(os.path.join(output_dir, 'place_attachment_effects.png'))
-        plt.close(pa_fig)
-        
-        # Migration patterns
-        mig_fig = self.analyze_migration_patterns(results_df)
-        mig_fig.savefig(os.path.join(output_dir, 'migration_patterns.png'))
-        plt.close(mig_fig)
-        
-        # Random Forest analysis
-        rf_results = self.analyze_random_forest(results_df)
-        
-        # Save results
-        results_df.to_csv(os.path.join(output_dir, 'migration_results.csv'))
-        
-        return results_df, rf_results
+    # --- Helper methods ---
+    # Keep _export_for_matlab, _analyze_random_forest, _visualize_place_attachment_effects,
+    # _analyze_migration_patterns, and _visualize_shock_effect_rct definitions as they are,
+    # just the calls to them are commented out above.
 
-    def _calculate_cyclical_moves(self, location_history):
-        """Calculate the proportion of moves that are cyclical."""
-        cyclical_count = 0
-        total_moves = 0
-        
-        for agent_history in location_history.values():
-            if len(agent_history) < 3:
-                continue
-                
-            for i in range(len(agent_history) - 2):
-                if agent_history[i] == agent_history[i + 2]:
-                    cyclical_count += 1
-                total_moves += 1
-        
-        return cyclical_count / total_moves
-    
-    def visualize_place_attachment_effects(self, results_df):
-        """Create visualizations showing place attachment effects on various metrics."""
-        # First verify columns exist
-        required_cols = ['attachment_level', 'total_moves', 'avg_move_distance', 
-                        'FractionMovesHome', 'avg_satisfaction']
-        
-        # Use attachment_level instead of mean_attachment
-        available_cols = [col for col in required_cols if col in results_df.columns]
-        if not available_cols:
-            print("Warning: Required columns missing for visualization")
-            return plt.figure()  # Return empty figure
-            
-        fig = plt.figure(figsize=(15, 10))
-        gs = plt.GridSpec(2, 3, figure=fig)
-        
-        # Plot 1: Place Attachment vs Total Moves
-        ax1 = fig.add_subplot(gs[0, 0])
-        sns.regplot(data=results_df, x='attachment_level', y='total_moves', ax=ax1)
-        ax1.set_title('Place Attachment vs Total Moves')
-        
-        # Plot 2: Place Attachment vs Distance
-        ax2 = fig.add_subplot(gs[0, 1])
-        sns.regplot(data=results_df, x='attachment_level', y='avg_move_distance', ax=ax2)
-        ax2.set_title('Place Attachment vs Move Distance')
-        
-        # Plot 3: Place Attachment vs Returns Home
-        ax3 = fig.add_subplot(gs[0, 2])
-        sns.regplot(data=results_df, x='attachment_level', y='FractionMovesHome', ax=ax3)
-        ax3.set_title('Place Attachment vs Returns Home')
-        
-        # Plot 4: Correlation Heatmap
-        ax4 = fig.add_subplot(gs[1, :])
-        correlation_matrix = results_df[available_cols].corr()
-        sns.heatmap(correlation_matrix, annot=True, cmap='RdBu', center=0, ax=ax4)
-        ax4.set_title('Correlation Heatmap of Key Metrics')
-        
-        plt.tight_layout()
-        return fig
+    def _export_for_matlab(self, results_df: pd.DataFrame, output_dir: str):
+        """Exports data in a format suitable for the MATLAB RF script."""
+        # Define inputs and metrics expected by the MATLAB script
+        input_names_matlab = [
+            'placeAttachmentMean', 'placeAttachmentSD', 'attachmentFormRate',
+            'attachmentDecayRate', 'initialAttachment', 'pInitiateMean',
+            'pInitiateSD', 'pConsumat', 'individualShockProb', 'attachmentShockMag'
+        ]
+        metric_names_matlab = [
+            'totalMoves', 'avgMoveDistance', 'avgSatisfaction',
+            'timeAwayFromHome', 'fractionMovesHome', 'utilityChange'
+        ]
 
-    def analyze_migration_patterns(self, results_df):
-        """Analyze and visualize migration patterns."""
-        # Check if required columns exist
-        if 'attachment_level' not in results_df.columns:
-            print("Warning: attachment_level column missing")
-            return plt.figure()  # Return empty figure
-            
-        fig = plt.figure(figsize=(15, 10))
-        gs = plt.GridSpec(2, 2, figure=fig)
-        
-        # Plot 1: Migration Flow by Attachment Level
-        ax1 = fig.add_subplot(gs[0, 0])
-        sns.lineplot(data=results_df, x='attachment_level', y='total_moves', ax=ax1)
-        ax1.set_title('Migration Flow by Attachment Level')
-        ax1.set_xlabel('Place Attachment')
-        ax1.set_ylabel('Total Moves')
-        
-        # Plot 2: Distribution of Move Distances
-        ax2 = fig.add_subplot(gs[0, 1])
-        if 'avg_move_distance' in results_df.columns:
-            sns.histplot(data=results_df, x='avg_move_distance', kde=True, ax=ax2)
-        ax2.set_title('Distribution of Move Distances')
-        ax2.set_xlabel('Average Move Distance')
-        ax2.set_ylabel('Count')
-        
-        # Plot 3: Attachment vs Migration Decision Type
-        ax3 = fig.add_subplot(gs[1, 0])
-        if all(col in results_df.columns for col in ['pConsumat', 'total_moves']):
-            sns.boxplot(data=results_df, x='pConsumat', y='total_moves', 
-                       hue='attachment_level', ax=ax3)
-        ax3.set_title('Migration by Decision Type and Attachment')
-        ax3.set_xlabel('Probability of Consumat Decision')
-        ax3.set_ylabel('Total Moves')
-        
-        # Plot 4: Network Effects and Attachment
-        ax4 = fig.add_subplot(gs[1, 1])
-        if 'mean_pInitiate' in results_df.columns:
-            scatter = sns.scatterplot(data=results_df, x='mean_pInitiate', y='total_moves', 
-                                    size='attachment_level', hue='attachment_level',
-                                    sizes=(50, 200), ax=ax4)
-            if scatter.legend_ is not None:
-                scatter.legend_.set_title('Place Attachment')
-        ax4.set_title('Network Effects and Place Attachment')
-        ax4.set_xlabel('Mean Initiate Probability')
-        ax4.set_ylabel('Total Moves')
-        
-        plt.tight_layout()
-        return fig
+        # Map DataFrame columns to MATLAB names
+        param_map = {
+            'mean_attachment': 'placeAttachmentMean',
+            'sd_attachment': 'placeAttachmentSD',
+            'attachment_form_rate': 'attachmentFormRate',
+            'attachment_decay_rate': 'attachmentDecayRate',
+            'initial_attachment': 'initialAttachment',
+            'mean_pInitiate': 'pInitiateMean',
+            'sd_pInitiate': 'pInitiateSD',
+            'pConsumat': 'pConsumat',
+            'individual_shock_probability': 'individualShockProb',
+            'attachment_shock_magnitude': 'attachmentShockMag'
+        }
+        metric_map = {
+            'total_moves': 'totalMoves',
+            'avg_move_distance': 'avgMoveDistance',
+            'avg_satisfaction': 'avgSatisfaction',
+            'TimeStepsAwayFromHome': 'timeAwayFromHome',
+            'FractionMovesHome': 'fractionMovesHome',
+            'avg_utility_change': 'utilityChange'
+        }
 
-    def analyze_random_forest(self, results_df):
+        # Select and rename columns
+        all_inputs_df = results_df[[k for k in param_map if k in results_df.columns]].rename(columns=param_map)
+        all_metrics_df = results_df[[k for k in metric_map if k in results_df.columns]].rename(columns=metric_map)
+
+        # Ensure columns match the expected order and fill missing with NaN
+        all_inputs_df = all_inputs_df.reindex(columns=input_names_matlab)
+        all_metrics_df = all_metrics_df.reindex(columns=metric_names_matlab)
+
+        # Convert to numpy arrays
+        all_inputs = all_inputs_df.to_numpy()
+        all_metrics = all_metrics_df.to_numpy()
+
+        # Check for NaNs which might cause issues in MATLAB
+        if np.isnan(all_inputs).any() or np.isnan(all_metrics).any():
+            print("Warning: NaN values found in data being exported to MATLAB.")
+            # Optionally handle NaNs, e.g., replace with a placeholder or drop rows
+            # all_inputs = np.nan_to_num(all_inputs)
+            # all_metrics = np.nan_to_num(all_metrics)
+
+        # Save .mat file
+        timestamp = os.path.basename(output_dir).replace('results_', '')
+        mat_file_path = os.path.join(output_dir, f'PA_Sensitivity_Results_{timestamp}.mat')
+        try:
+            sio.savemat(mat_file_path, {
+                'allInputs': all_inputs,
+                'allMetrics': all_metrics,
+                'inputNames': np.array(input_names_matlab, dtype=object), # Use dtype=object for strings
+                'metricNames': np.array(metric_names_matlab, dtype=object)
+            })
+        except Exception as e:
+            print(f"Error saving .mat file: {e}")
+
+
+    def _analyze_random_forest(self, results_df: pd.DataFrame, output_dir: str):
         """Generate Random Forest analysis plots similar to MATLAB implementation."""
-        from sklearn.ensemble import RandomForestRegressor
-        import matplotlib.pyplot as plt
-        
-        # Only use parameters that exist in the results
-        available_params = [param for param in [
-            'mean_attachment', 'sd_attachment', 'attachment_form_rate', 
-            'attachment_decay_rate', 'initial_attachment', 'mean_pInitiate', 
-            'sd_pInitiate', 'pConsumat'
-        ] if param in results_df.columns]
-        
-        available_metrics = [metric for metric in [
-            'total_moves', 'avg_move_distance', 'avg_satisfaction', 
-            'timeStepsAwayFromHome', 'fractionMovesHome', 'avg_utility_change'
-        ] if metric in results_df.columns]
-        
+        # Define potential parameters including new shock params
+        potential_params = list(self.param_ranges.keys()) # Use defined ranges
+        available_params = [param for param in potential_params if param in results_df.columns]
+
+        # Define potential metrics based on what was collected
+        potential_metrics = list(self._get_metrics_to_collect().keys())
+        available_metrics = [metric for metric in potential_metrics if metric in results_df.columns]
+
         if not available_params or not available_metrics:
             print("Warning: Not enough parameters or metrics for random forest analysis")
             return None
-        
-        # Prepare data
-        X = results_df[available_params].values
+
+        # Prepare data - handle potential NaNs
+        results_df_rf = results_df.dropna(subset=available_params + available_metrics).copy() # Use copy
+        if results_df_rf.empty:
+             print("Warning: No valid data remaining after dropping NaNs for RF analysis.")
+             return None
+
+        # Ensure numeric types for RF
+        for col in available_params + available_metrics:
+             results_df_rf[col] = pd.to_numeric(results_df_rf[col], errors='coerce')
+        results_df_rf.dropna(subset=available_params + available_metrics, inplace=True)
+        if results_df_rf.empty:
+             print("Warning: No numeric data remaining after coercion/dropping NaNs for RF analysis.")
+             return None
+
+
+        X = results_df_rf[available_params].values
         importance_scores = {}
         rf_models = {}
-        
+
         # Colors for parameter types
-        pa_params = ['mean_attachment', 'sd_attachment', 'attachment_form_rate', 
-                    'attachment_decay_rate', 'initial_attachment']
-        param_colors = ['#3399CC' if param in pa_params else '#CC6644' 
-                       for param in available_params]
-        
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        
+        pa_params = ['mean_attachment', 'sd_attachment', 'attachment_form_rate',
+                    'attachment_decay_rate', 'initial_attachment', 'attachment_shock_magnitude'] # Added shock mag
+        shock_params = ['individual_shock_probability'] # Separate shock prob
+        param_colors = []
+        for param in available_params:
+            if param in pa_params:
+                param_colors.append('#3399CC') # Blue for PA
+            elif param in shock_params:
+                param_colors.append('#FF8C00') # Orange for Shock
+            else:
+                param_colors.append('#CC6644') # Red-Brown for Other
+
         # Generate plots for each metric
         for metric in available_metrics:
-            if metric not in results_df.columns:
-                continue
-                
-            y = results_df[metric].values
-            
+            y = results_df_rf[metric].values
+            if len(np.unique(y)) <= 1: # Skip if metric is constant
+                 print(f"Skipping RF for constant metric: {metric}")
+                 continue
+
             # Train Random Forest
-            rf = RandomForestRegressor(n_estimators=500, min_samples_leaf=5)
-            rf.fit(X, y)
-            
+            try:
+                rf = RandomForestRegressor(n_estimators=100, min_samples_leaf=5, random_state=42, n_jobs=-1) # Use more cores
+                rf.fit(X, y)
+            except Exception as rf_error:
+                print(f"Error training RF for metric {metric}: {rf_error}")
+                continue
+
+
             # Store model and importance scores
             rf_models[metric] = rf
             importance_scores[metric] = rf.feature_importances_
-            
+
             # Plot variable importance
             plt.figure(figsize=(12, 8))
             sorted_idx = np.argsort(rf.feature_importances_)
             pos = np.arange(len(sorted_idx)) + .5
-            
+
             # Create bar plot with color coding
-            bars = plt.barh(pos, rf.feature_importances_[sorted_idx])
-            for idx, bar in enumerate(bars):
-                bar.set_color(param_colors[sorted_idx[idx]])
-                
+            bars = plt.barh(pos, rf.feature_importances_[sorted_idx], align='center') # Use align='center'
+            # Apply colors correctly based on sorted index
+            sorted_colors = [param_colors[i] for i in sorted_idx]
+            for bar, color in zip(bars, sorted_colors):
+                 bar.set_color(color)
+
+
             plt.yticks(pos, np.array(available_params)[sorted_idx])
             plt.xlabel('Relative Importance')
             plt.title(f'Variable Importance for {metric}')
-            
+
             # Add legend
-            from matplotlib.patches import Patch
             legend_elements = [
-                Patch(facecolor='#3399CC', label='Place Attachment Parameters'),
-                Patch(facecolor='#CC6644', label='Other Parameters')
+                Patch(facecolor='#3399CC', label='Place Attachment Params'),
+                Patch(facecolor='#FF8C00', label='Shock Params'), # Add shock legend
+                Patch(facecolor='#CC6644', label='Other Params')
             ]
             plt.legend(handles=legend_elements)
-            
+
             plt.tight_layout()
-            plt.savefig(f'rf_importance_{metric}_{timestamp}.png')
+            plt.savefig(os.path.join(output_dir, f'rf_importance_{metric}.png')) # Save in output dir
             plt.close()
-        
+
+
         # Generate heatmap if we have data
         if importance_scores:
-            plt.figure(figsize=(14, 8))
-            importance_matrix = np.array([importance_scores[m] for m in available_metrics])
-            sns.heatmap(importance_matrix, xticklabels=available_params, 
-                       yticklabels=available_metrics,
-                       cmap='YlOrRd', annot=True, fmt='.2f')
-            plt.title('Parameter Importance Across Metrics')
-            plt.xticks(rotation=45)
-            plt.tight_layout()
-            plt.savefig(f'rf_importance_heatmap_{timestamp}.png')
-            plt.close()
-        
+            plt.figure(figsize=(14, 10)) # Increase size slightly
+            # Ensure metrics used here match those looped above
+            valid_metrics_for_heatmap = [m for m in available_metrics if m in importance_scores]
+            if valid_metrics_for_heatmap:
+                 importance_matrix = np.array([importance_scores[m] for m in valid_metrics_for_heatmap])
+                 sns.heatmap(importance_matrix, xticklabels=available_params,
+                            yticklabels=valid_metrics_for_heatmap, # Use valid metrics
+                            cmap='YlOrRd', annot=True, fmt='.3f') # Increase precision
+                 plt.title('Parameter Importance Across Metrics')
+                 plt.xticks(rotation=45, ha='right') # Adjust rotation
+                 plt.yticks(rotation=0)
+                 plt.tight_layout()
+                 plt.savefig(os.path.join(output_dir, f'rf_importance_heatmap.png')) # Save in output dir
+                 plt.close()
+
+
         return {
             'models': rf_models,
             'importance_scores': importance_scores,
             'input_params': available_params,
-            'metrics': available_metrics
+            'metrics': available_metrics # Return available metrics used
         }
 
-    def generate_report(self):
-        """Generate a summary report of the experiments."""
-        report = pd.DataFrame(self.metrics)
-        
-        # Calculate correlations
-        correlations = report.corr()['attachment_level'].sort_values(ascending=False)
-        
-        # Create summary statistics
-        summary = report.describe()
-        
-        return {
-            'correlations': correlations,
-            'summary_stats': summary,
-            'raw_data': report
-        }
-    
-    def cleanup(self):
-        """Close NetLogo connection and clean up resources."""
-        try:
-            if hasattr(self, 'netlogo'):
-                self.netlogo.kill_workspace()
-                self.netlogo = None
-            plt.close('all')  # Close all matplotlib figures
-        except Exception as e:
-            print(f"Error during cleanup: {e}")
-            
-    def _generate_param_combinations(self):
-        """Generate all parameter combinations for sweep."""
-        param_names = list(self.params.keys())
-        param_values = list(self.params.values())
-        combinations = list(itertools.product(*param_values))
-        return [dict(zip(param_names, combo)) for combo in combinations]
-    
-    def analyze_results(self, results_df):
-        """Analyze parameter sweep results."""
-        # Group by parameters and calculate statistics
-        summary = results_df.groupby(list(self.params.keys())).agg({
-            'avg_move_distance': ['mean', 'std'],
-            'total_moves': ['mean', 'std'],
-            'avg_income_change': ['mean', 'std'],
-            'cyclical_moves': ['mean', 'std']
-        }).reset_index()
+
+    def _visualize_place_attachment_effects(self, results_df: pd.DataFrame):
+        """Create visualizations showing place attachment effects on various metrics."""
+        # Use 'mean_attachment' if 'attachment_level' was just a placeholder
+        x_param = 'mean_attachment' # This should be the varied parameter
+
+        required_cols = [x_param, 'total_moves', 'avg_move_distance',
+                        'FractionMovesHome', 'avg_satisfaction']
+
+        available_cols = [col for col in required_cols if col in results_df.columns]
+        if not available_cols or x_param not in available_cols: # Ensure x_param is available
+            print(f"Warning: Required columns missing for PA visualization (need {x_param} and metrics)")
+            return plt.figure()
+
+        # Drop rows with NaN in essential columns for plotting
+        plot_df = results_df[available_cols].dropna()
+        if plot_df.empty:
+             print(f"Warning: No valid data for PA visualization after dropping NaNs.")
+             return plt.figure()
+
+
+        fig = plt.figure(figsize=(15, 10))
+        gs = plt.GridSpec(2, 3, figure=fig)
+
+        # Plot 1: Place Attachment vs Total Moves
+        ax1 = fig.add_subplot(gs[0, 0])
+        if 'total_moves' in plot_df.columns:
+             sns.regplot(data=plot_df, x=x_param, y='total_moves', ax=ax1, line_kws={'color': 'red'}, scatter_kws={'alpha':0.5})
+        ax1.set_title(f'{x_param.replace("_", " ").title()} vs Total Moves')
+        ax1.set_xlabel(x_param.replace("_", " ").title())
+
+
+        # Plot 2: Place Attachment vs Distance
+        ax2 = fig.add_subplot(gs[0, 1])
+        if 'avg_move_distance' in plot_df.columns:
+            sns.regplot(data=plot_df, x=x_param, y='avg_move_distance', ax=ax2, line_kws={'color': 'red'}, scatter_kws={'alpha':0.5})
+        ax2.set_title(f'{x_param.replace("_", " ").title()} vs Move Distance')
+        ax2.set_xlabel(x_param.replace("_", " ").title())
+
+
+        # Plot 3: Place Attachment vs Returns Home
+        ax3 = fig.add_subplot(gs[0, 2])
+        if 'FractionMovesHome' in plot_df.columns:
+            sns.regplot(data=plot_df, x=x_param, y='FractionMovesHome', ax=ax3, line_kws={'color': 'red'}, scatter_kws={'alpha':0.5})
+        ax3.set_title(f'{x_param.replace("_", " ").title()} vs Fraction Home')
+        ax3.set_xlabel(x_param.replace("_", " ").title())
+
+
+        # Plot 4: Correlation Heatmap
+        ax4 = fig.add_subplot(gs[1, :])
+        # Ensure only numeric columns are used for correlation
+        numeric_cols_for_corr = plot_df.select_dtypes(include=np.number).columns
+        if len(numeric_cols_for_corr) > 1:
+             correlation_matrix = plot_df[numeric_cols_for_corr].corr()
+             sns.heatmap(correlation_matrix, annot=True, cmap='RdBu', center=0, ax=ax4, fmt=".2f")
+        ax4.set_title('Correlation Heatmap of Key Metrics')
+
+        plt.tight_layout()
+        return fig
+
+
+    def _analyze_migration_patterns(self, results_df: pd.DataFrame):
+        """Analyze and visualize migration patterns."""
+        # Use 'mean_attachment' if 'attachment_level' was just a placeholder
+        x_param = 'mean_attachment' # This should be the varied parameter
+
+        if x_param not in results_df.columns:
+            print(f"Warning: {x_param} column missing for migration patterns")
+            return plt.figure()
+
+        # Drop NaNs for relevant columns
+        plot_df = results_df.dropna(subset=[x_param, 'total_moves', 'avg_move_distance', 'pConsumat', 'mean_pInitiate']).copy()
+        if plot_df.empty:
+             print("Warning: No valid data for migration pattern plots after dropping NaNs.")
+             return plt.figure()
+
+
+        fig = plt.figure(figsize=(15, 10))
+        gs = plt.GridSpec(2, 2, figure=fig)
+
+        # Plot 1: Migration Flow by Attachment Level
+        ax1 = fig.add_subplot(gs[0, 0])
+        sns.lineplot(data=plot_df, x=x_param, y='total_moves', ax=ax1, errorbar='sd') # Add error bars
+        ax1.set_title(f'Migration Flow by {x_param.replace("_", " ").title()}')
+        ax1.set_xlabel(x_param.replace("_", " ").title())
+        ax1.set_ylabel('Total Moves')
+
+        # Plot 2: Distribution of Move Distances
+        ax2 = fig.add_subplot(gs[0, 1])
+        sns.histplot(data=plot_df, x='avg_move_distance', kde=True, ax=ax2)
+        ax2.set_title('Distribution of Average Move Distances')
+        ax2.set_xlabel('Average Move Distance')
+        ax2.set_ylabel('Count')
+
+        # Plot 3: Attachment vs Migration Decision Type
+        ax3 = fig.add_subplot(gs[1, 0])
+        # Ensure pConsumat is categorical for boxplot
+        plot_df['pConsumat_cat'] = pd.Categorical(plot_df['pConsumat'])
+        hue_param = x_param if plot_df[x_param].nunique() > 1 and plot_df[x_param].nunique() < 10 else None # Limit hue categories
+        sns.boxplot(data=plot_df, x='pConsumat_cat', y='total_moves',
+                    hue=hue_param, ax=ax3) # Use x_param for hue if suitable
+        ax3.set_title(f'Migration by Decision Type and {x_param.replace("_", " ").title()}')
+        ax3.set_xlabel('Probability of Consumat Decision')
+        ax3.set_ylabel('Total Moves')
+        if hue_param and ax3.get_legend():
+             ax3.get_legend().set_title(x_param.replace("_", " ").title()) # Use x_param
+
+
+        # Plot 4: Network Effects and Attachment
+        ax4 = fig.add_subplot(gs[1, 1])
+        scatter = sns.scatterplot(data=plot_df, x='mean_pInitiate', y='total_moves',
+                                size=x_param, hue=x_param, # Use x_param
+                                sizes=(50, 200), ax=ax4, alpha=0.7)
+        if scatter.legend_ is not None:
+            try: # Handle potential legend errors
+                 scatter.legend_.set_title(x_param.replace("_", " ").title()) # Use x_param
+            except AttributeError: pass # Ignore if legend title cannot be set
+        ax4.set_title('Network Effects and Place Attachment')
+        ax4.set_xlabel('Mean Initiate Probability')
+        ax4.set_ylabel('Total Moves')
+
+        plt.tight_layout()
+        return fig
+
+
+    def _visualize_shock_effect_rct(self, results_df: pd.DataFrame):
+        """Visualize the difference-in-difference / RCT effect of shocks."""
+        fig, axes = plt.subplots(1, 2, figsize=(12, 5), sharey=False) # Allow different y-axes
+
+        # Filter for runs where shocks were possible and data exists
+        rct_cols = [
+            'individual_shock_probability',
+            'avg_satisfaction_shocked', 'avg_satisfaction_not_shocked',
+            'avg_moves_shocked', 'avg_moves_not_shocked'
+        ]
+        if not all(col in results_df.columns for col in rct_cols):
+             print("Warning: Missing required columns for RCT visualization.")
+             # Draw empty plots
+             axes[0].set_title('Shock Effect on Satisfaction (Missing Data)')
+             axes[1].set_title('Shock Effect on Moves (Missing Data)')
+             plt.tight_layout()
+             return fig
+
+        rct_df = results_df[results_df['individual_shock_probability'] > 0].copy()
+        rct_df.dropna(subset=rct_cols, inplace=True)
+
+
+        if rct_df.empty:
+            print("Warning: No valid data for RCT visualization (need runs with shock_prob > 0 and valid RCT metrics).")
+            # Draw empty plots
+            axes[0].set_title('Shock Effect on Satisfaction (No Data)')
+            axes[1].set_title('Shock Effect on Moves (No Data)')
+            plt.tight_layout()
+            return fig
+
+        # Calculate the difference (Shocked - Not Shocked)
+        rct_df['satisfaction_diff'] = rct_df['avg_satisfaction_shocked'] - rct_df['avg_satisfaction_not_shocked']
+        rct_df['moves_diff'] = rct_df['avg_moves_shocked'] - rct_df['avg_moves_not_shocked']
+
+        # Ensure shock probability is categorical for plotting
+        rct_df['shock_prob_cat'] = pd.Categorical(rct_df['individual_shock_probability'])
+
+        # Plot 1: Effect on Satisfaction
+        sns.barplot(data=rct_df, x='shock_prob_cat', y='satisfaction_diff', ax=axes[0], errorbar='sd', capsize=.1)
+        axes[0].set_title('Shock Effect (ATE) on Agent Satisfaction')
+        axes[0].set_xlabel('Individual Shock Probability')
+        axes[0].set_ylabel('Avg Satisfaction Difference\n(Shocked - Not Shocked)')
+        axes[0].axhline(0, color='grey', linestyle='--')
+        axes[0].tick_params(axis='x', rotation=45)
+
+
+        # Plot 2: Effect on Moves
+        sns.barplot(data=rct_df, x='shock_prob_cat', y='moves_diff', ax=axes[1], errorbar='sd', capsize=.1)
+        axes[1].set_title('Shock Effect (ATE) on Agent Moves')
+        axes[1].set_xlabel('Individual Shock Probability')
+        axes[1].set_ylabel('Avg Moves Difference\n(Shocked - Not Shocked)')
+        axes[1].axhline(0, color='grey', linestyle='--')
+        axes[1].tick_params(axis='x', rotation=45)
+
+
+        plt.tight_layout()
+        return fig
 
 
 # Example usage
 if __name__ == "__main__":
     try:
         model_path = "./migration_place_attachment_model.nlogo"
-        print("Running migration analysis...")
-        analyzer = MigrationAnalyzer(model_path)
-        
-        print("Setup and run experiments")
-        analyzer.setup_experiment()
-        results_df, rf_results = analyzer.run_experiments(n_iterations=5)
-        
-        print(f"Analysis complete. Check results in the results_* directory.")
-            
+        print("Running MINIMAL Parameter Sweep Experiment (Shock Prototype)...")
+
+        # Instantiate the specific experiment
+        experiment = ParameterSweepExperiment(model_path)
+
+        # Run using the base class method - use fewer iterations/ticks for speed
+        results_df = experiment.run_experiments(
+            n_iterations=2,   # Reduced iterations
+            # num_processes= Use default or specify
+            num_ticks=30      # Reduced ticks
+        )
+
+        if not results_df.empty:
+            print("\nExperiment finished. Aggregated results summary:")
+            print(results_df.head())
+            # Focus on RCT columns
+            rct_cols = [c for c in results_df.columns if 'shocked' in c]
+            if rct_cols:
+                 print("\nRCT Metrics:")
+                 print(results_df[['individual_shock_probability', 'mean_attachment'] + rct_cols])
+
+            print(f"\nMinimal results/plots saved in the 'results_YYYYMMDD_HHMMSS' directory.")
+        else:
+            print("\nExperiment finished, but no results were generated.")
+
     except Exception as e:
-        print(f"Error during analysis: {e}")
+        print(f"\nError during experiment execution: {e}")
         import traceback
         traceback.print_exc()
     finally:
-        if 'analyzer' in locals():
-            analyzer.cleanup()
+        # Ensure all matplotlib figures are closed after processing
+        plt.close('all')
+        print("\nMain process finished.")

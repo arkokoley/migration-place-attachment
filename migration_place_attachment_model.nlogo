@@ -1,6 +1,7 @@
 extensions [table]
 
-globals [map_spread_factor max_color_spread layer_functions max_mean_q max_sd_q max_mean_i max_sd_i max_a
+globals [
+  map_spread_factor max_color_spread layer_functions max_mean_q max_sd_q max_mean_i max_sd_i max_a
   max_group_diff
   place_list
   distance_table
@@ -17,25 +18,38 @@ globals [map_spread_factor max_color_spread layer_functions max_mean_q max_sd_q 
   year_start_tick    ; Track when each year starts
   move_history       ; Table to store movement history
 
-  ; Add experiment metrics
+  ; Experiment metrics
   total_moves           ; Track total moves
-  total_satisfaction    ; Track satisfaction
-  total_uncertainty     ; Track uncertainty
+  total_satisfaction    ; Track satisfaction (sum for averaging)
+  total_uncertainty     ; Track uncertainty (sum for averaging)
   move_distances       ; List of move distances
-  satisfaction_levels  ; List of satisfaction levels
+  satisfaction_levels  ; List of satisfaction levels (per agent per tick)
   utility_changes      ; List of utility changes
+
+  ; RCT Metrics Tracking
+  sum_satisfaction_shocked
+  count_shocked
+  sum_moves_shocked
+  sum_satisfaction_not_shocked
+  count_not_shocked
+  sum_moves_not_shocked
 ]
 
 breed [people person]
 breed [places place]
 
 patches-own [location state_name in_context]
-people-own [home_state home_state_name resident_state_name class attachment_level attachment preferences observations layer_observations pInitiate decisionType satisfied? uncertain? target_place]
+people-own [
+  home_state home_state_name resident_state_name class
+  attachment_level attachment preferences observations layer_observations
+  pInitiate decisionType satisfied? uncertain? target_place
+  ever_shocked? ; Boolean: TRUE if agent ever experienced an individual shock
+  moves_count   ; Integer: Total moves made by this agent
+]
 places-own [name place_location place_mean_q place_sd_q place_a place_mean_i place_sd_i admin_level]
 
 
 to setup
-
   clear-all
   reset-ticks
 
@@ -110,6 +124,7 @@ to setup
 end
 
 to go
+  apply-individual-shocks
 
   ;;update any time functions
   ask people [update-place-attachment]
@@ -126,8 +141,15 @@ to go
   update-migration-metrics
 
   tick
+end
 
-
+to apply-individual-shocks
+  ask people [
+    if random-float 1.0 < individual_shock_probability [
+      table:put attachment resident_state_name attachment_shock_magnitude
+      set ever_shocked? TRUE
+    ]
+  ]
 end
 
 to-report agent-data-csv
@@ -142,55 +164,59 @@ end
 
 ; Add reporters for Python interface
 to-report get-experiment-metrics
+  let avg_satisfaction (ifelse-value (count people > 0) [total_satisfaction / count people] [0])
+  let avg_uncertainty (ifelse-value (count people > 0) [total_uncertainty / count people] [0])
+  let mean_dist (ifelse-value (not empty? move_distances) [mean move_distances] [0])
+  let mean_util_change (ifelse-value (not empty? utility_changes) [mean utility_changes] [0])
+
   report (list
     total_moves
-    ifelse-value empty? move_distances [0] [mean move_distances]
-    ifelse-value empty? satisfaction_levels [0] [mean satisfaction_levels]
-    ifelse-value empty? utility_changes [0] [mean utility_changes]
+    mean_dist
+    avg_satisfaction
+    mean_util_change
     count people with [uncertain?]
+    far_from_home
+    at_home
   )
 end
 
-to-report get-agent-data
-  let agent-data []
-  ask people [
-    set agent-data lput (list 
-      who 
-      resident_state_name
-      home_state_name
-      satisfied?
-      uncertain?
-      attachment_level) agent-data
-  ]
-  report agent-data
+to-report get-metrics-by-shock-status
+  let avg_sat_shocked (ifelse-value (count_shocked > 0) [sum_satisfaction_shocked / count_shocked] [0])
+  let avg_moves_shocked (ifelse-value (count_shocked > 0) [sum_moves_shocked / count_shocked] [0])
+  let avg_sat_not_shocked (ifelse-value (count_not_shocked > 0) [sum_satisfaction_not_shocked / count_not_shocked] [0])
+  let avg_moves_not_shocked (ifelse-value (count_not_shocked > 0) [sum_moves_not_shocked / count_not_shocked] [0])
+
+  report (list
+    avg_sat_shocked
+    avg_moves_shocked
+    avg_sat_not_shocked
+    avg_moves_not_shocked
+  )
 end
 
 to update-place-attachment
-
-  ;;increment place attachment where the agent is (but don't add it back in yet)
-  let current_place table:get attachment resident_state_name
-  set current_place min (list 1 (current_place + attachment_form_rate))
-
-  ;;decrement place attachment where the agent isn't
-  let place_names table:keys attachment
-
-  foreach place_names [x ->
-    let place_attachment table:get attachment x
-    table:put attachment x max (list 0 (place_attachment - attachment_decay_rate))
+  if not table:has-key? attachment resident_state_name [
+      table:put attachment resident_state_name 0
   ]
 
-  ;;now add in the previously calculated value for place attachment
-  table:put attachment resident_state_name current_place
+  let current_place_attachment table:get attachment resident_state_name
+  set current_place_attachment min (list 1 (current_place_attachment + attachment_form_rate))
 
+  let place_names table:keys attachment
+  foreach place_names [x ->
+    if x != resident_state_name [
+      let place_attachment table:get attachment x
+      table:put attachment x max (list 0 (place_attachment - attachment_decay_rate))
+    ]
+  ]
+
+  table:put attachment resident_state_name current_place_attachment
 end
 
 to-report calculate-utility [quality_of_life income where_i_am]
-  ;; estimate utility as the sum across layers, multiplied by a function of place attachment, and scaled by attachment to other places.
-  ;; could improve with a distance measure
   let utility 0
   set utility (item 0 preferences) * quality_of_life + (item 1 preferences * income)
   set utility utility * (1 + attachment_level * (table:get attachment where_i_am))
-  ;calculate the attachment-distance product
   let attachment_distance_product 0
   foreach place_list [ i ->
     set attachment_distance_product attachment_distance_product + (table:get attachment i) * (table:get table:get distance_table where_i_am i)
@@ -200,7 +226,6 @@ to-report calculate-utility [quality_of_life income where_i_am]
 end
 
 to get-utility
-
   let where_i_am [state_name] of patch-here
 
   let quality_of_life 0
@@ -218,7 +243,6 @@ to get-utility
 end
 
 to estimate-utility-from-layer-observation [where_i_am]
-
   let quality_of_life item 0 item 0 (table:get layer_observations where_i_am)
   let income item 0 item 1 (table:get layer_observations where_i_am)
   let utility calculate-utility quality_of_life income where_i_am
@@ -226,7 +250,6 @@ to estimate-utility-from-layer-observation [where_i_am]
 end
 
 to add-layer-observation [ index layer_value current_place]
-
   let layer_observation_list table:get layer_observations current_place
   let current_layer item index layer_observation_list
   set current_layer fput layer_value current_layer
@@ -235,83 +258,58 @@ to add-layer-observation [ index layer_value current_place]
   ]
   set layer_observation_list replace-item index layer_observation_list current_layer
   table:put layer_observations current_place layer_observation_list
-
 end
 
 to add-observation [ utility current_place]
-
   let observation_list table:get observations current_place
   set observation_list fput utility observation_list
   if length observation_list > max_memory [
     set observation_list sublist observation_list 0 (max_memory - 1)
   ]
   table:put observations current_place observation_list
-
 end
 
 to interact
-
-  ;;set the number of possible interactions
   let numInteractions maxInitiateInteractions
   while [numInteractions > 0] [
-
-    ;;see if this interaction happens
-    if random-float 1 < pInitiate [;; have an interaction with someone!
-
-      ;;call a friend
+    if random-float 1 < pInitiate [
       if (any? link-neighbors) [
         let partner one-of link-neighbors
-
-        ;;draw the number of bits of info shared to
         let numPiecesTo random max_nInformation
         while [numPiecesTo > 0] [
-
           let topic one-of place_list
           let layer_obs_topic table:get layer_observations topic
           let length_topic length item 0 layer_obs_topic
-          if length_topic > 0 [ ;; i.e., if there are values in any of the layer function outputs stored
+          if length_topic > 0 [
             let topic_item random length_topic
             foreach n-values (table:length layer_functions) [i -> i] [ i ->
               let current_item item topic_item (item i layer_obs_topic)
               ask partner [add-layer-observation i current_item topic]
             ]
-            ;;estimate the utility from the layers we just added, which we know are in the first point
             ask partner [estimate-utility-from-layer-observation topic]
           ]
-
           set numPiecesTo numPiecesTo - 1
         ]
         ask partner [
-
-          ;;draw the number of bits of info shared from
           let numPiecesFrom random max_nInformation
           while [numPiecesFrom > 0] [
-
             let topic one-of place_list
             let layer_obs_topic table:get layer_observations topic
             let length_topic length item 0 layer_obs_topic
-            if length_topic > 0 [ ;; i.e., if there are values in any of the layer function outputs stored
+            if length_topic > 0 [
               let topic_item random length_topic
               foreach n-values (table:length layer_functions) [i -> i] [ i ->
                 let current_item item topic_item (item i layer_obs_topic)
                 ask myself [add-layer-observation i current_item topic]
-
               ]
             ]
-
             set numPiecesFrom numPiecesFrom - 1
           ]
-
         ]
-
       ]
-
-
     ]
-
     set numInteractions numInteractions - 1
   ]
-
 end
 
 to decide
@@ -326,15 +324,11 @@ to decide
     decisionType = "maximize" [
       decide-maximize
     ])
-
-
 end
 
 to setup-agents
-
   set-default-shape people "person"
 
-  ;;set up the blank observation and attachment tables to put into agents
   let attachment_table place_list
   let observation_table place_list
   let layer_observation_table place_list
@@ -352,7 +346,7 @@ to setup-agents
   set layer_observation_table table:from-list layer_observation_table
 
   create-people initial_population [
-   setxy random-xcor random-ycor
+    setxy random-xcor random-ycor
     set home_state [location] of patch-here
     set home_state_name reduce [[a b] -> (word a "_" b)] location
     set resident_state_name home_state_name
@@ -367,16 +361,14 @@ to setup-agents
     set target_place resident_state_name
     set uncertain? FALSE
     set satisfied? FALSE
+    set ever_shocked? FALSE
+    set moves_count 0
   ]
-
 end
 
 to setup-network
-
-  ;clear any previous network
   ask links [die]
 
-  ;rescale probabilities to sum to one
   let total_p (p_link_state + p_link_random + p_link_network)
   set p_link_state p_link_state / total_p
   set p_link_random p_link_random / total_p
@@ -384,23 +376,15 @@ to setup-network
 
   let n_links ave_links_person * count people
 
-
   let p_1 p_link_state
   let p_2 p_link_state + p_link_network
 
   while [n_links > 0] [
-
     let link_handled 0
-
     let person_1 one-of people
-
     ask person_1 [
-
       let r_draw random-float 1
-
       if (r_draw < p_1 and link_handled = 0) [
-
-       ;;assign link based on state
         let others_in_state other people with [home_state_name = [home_state_name] of myself]
         if any? others_in_state [
           create-link-with one-of others_in_state
@@ -408,40 +392,27 @@ to setup-network
         ]
         set link_handled 1
       ]
-
       if (r_draw < p_2 and link_handled = 0) [
-        ;;choose based on network
         let friends link-neighbors
         let other_friends friends
         ask friends [
          set other_friends (turtle-set other_friends link-neighbors)
         ]
-
         if any? other other_friends [
          create-link-with one-of other other_friends
          set n_links n_links - 1
         ]
-
        set link_handled 1
       ]
-
       if (link_handled = 0) [
        create-link-with one-of other people
        set n_links n_links - 1
-
       ]
-
-
     ]
-
   ]
-
 end
 
 to setup-map
-
-
-  ;initialize locations
   ask patches [set location n-values admin_levels [0]]
 
   let place_todo []
@@ -451,10 +422,7 @@ to setup-map
   set place_todo lput  current_state_name place_todo
   set place_level lput 0 place_level
 
-
   while [length place_todo > 0][
-
-
     let current_place item 0 place_todo
     let current_level item 0 place_level
     set place_todo but-first place_todo
@@ -463,27 +431,19 @@ to setup-map
     ask patches with [state_name = current_place] [set in_context 1]
     let current_context count patches with [in_context = 1]
 
-    ;figure out how many parts we have for this place
     let num_parts max (list (round random-normal mean_parts sd_parts) 1)
-
 
     let current_part 1
 
-    ;seeding our parts
-
     ask n-of (min (list current_context num_parts)) patches with [in_context = 1] [
-
       set location replace-item current_level location current_part
-      set current_state_name reduce [[a b] -> (word a "_" b)] location ;; (sublist location 0 (current_level + 1))
+      set current_state_name reduce [[a b] -> (word a "_" b)] location
       set state_name current_state_name
       if (current_level < admin_levels - 1) [
         set place_todo lput  current_state_name place_todo
         set place_level lput  (current_level + 1) place_level
       ]
-
       set current_part current_part + 1
-
-      ;;think of each of these seeds like a 'capital' that we'll define as a place agent
       sprout-places 1 [
         set admin_level current_level
         set name (reduce [[a b] -> (word a "_" b)] location)
@@ -491,15 +451,9 @@ to setup-map
       ]
     ]
 
-
-
-    ;let the parts fill out
     while [any? patches with [in_context = 1 and item current_level location = 0]] [
-
-
       ask patches with [in_context = 1 and item current_level location = 0] [
         let assigned_neighbors neighbors4 with [in_context = 1 and item current_level location > 0]
-
         if any? assigned_neighbors [
           set current_part [item current_level location] of one-of assigned_neighbors
           set location replace-item current_level location current_part
@@ -507,15 +461,11 @@ to setup-map
           set state_name current_state_name
         ]
       ]
+    ]
+  ]
 
-    ];;end fill-out while loop
-
-  ];; end subdivide new place while loop
-
-  ;;make a list of all unique places, now that all patches assigned
   set place_list remove-duplicates [name] of places
 
-  ;;calculate distance matrix
   let max_distance 0
   set distance_table table:make
   let distance_column place_list
@@ -539,7 +489,6 @@ to setup-map
     table:put distance_table i current_column
   ]
 
-  ;;normalize the whole table to have a max value of 1
   foreach place_list [ i ->
     let current_column table:get distance_table i
     foreach place_list [ j ->
@@ -548,10 +497,7 @@ to setup-map
     ]
   ]
 
-
-  ;color the patches
   ask patches [set pcolor ((reduce [[a b] -> map_spread_factor * a + b] location) / (10 ^ (length location)) * max_color_spread)]
-
 end
 
 to-report copy-table [ orig ]
@@ -563,8 +509,7 @@ to-report copy-table [ orig ]
 end
 
 to decide-consumat
-
-    define-satisfaction-certainty
+  define-satisfaction-certainty
 
   ifelse satisfied? [
     ifelse uncertain? [
@@ -582,13 +527,10 @@ to decide-consumat
       decide-deliberate-move
     ]
   ]
-
-
 end
 
-
 to decide-maximize
-    let where_i_am [state_name] of patch-here
+  let where_i_am [state_name] of patch-here
   let current_utility_list table:get observations where_i_am
   let current_utility 0
   if not empty? current_utility_list [ set current_utility mean current_utility_list ]
@@ -607,9 +549,7 @@ to decide-maximize
   ]
 
   set target_place best
-
 end
-
 
 to-report get-weighted-average [l scale]
   if length l = 0 [ report 0 ]
@@ -658,7 +598,6 @@ to define-satisfaction-certainty
   set satisfied? TRUE
   if my-satisfaction < 0.5 * average_neighbor_satisfaction [ set satisfied? FALSE ]
 
-
   let average_neighbor_uncertainty_sd 0
   ask link-neighbors [
     let my-uncertainty get-uncertainty
@@ -671,42 +610,29 @@ to define-satisfaction-certainty
   if my-uncertainty-sd < 1.5 * average_neighbor_uncertainty_sd [ set uncertain? FALSE ]
   ]
 
-  ; JUST FOR NOW!!!!!!!!!!!!
   set satisfied? get-satisfaction > 0
   set uncertain? FALSE
-
 end
-
 
 to decide-stay
 end
 
-to decide-look-to-peers ; look at people in a similar position (same region? same satisfaction/utility?)
+to decide-look-to-peers
 end
 
-; to decide-deliberate-move
-;   let place_scores all-place-observation-weighted-average 0.5
-;   let max_i position max place_scores place_scores
-;   let max_place item max_i place_list
-;   set target_place max_place ; probably want to make this a probability rather than just setting a target place
-; end
-
-; Optimize move and decision logic
 to decide-deliberate-move
   let cached_scores all-place-observation-weighted-average 0.5
   set target_place item (position max cached_scores cached_scores) place_list
 
-  ; Track metrics when decision made
   let old_utility mean [get-satisfaction] of people
   let new_utility mean [get-satisfaction] of people with [target_place != resident_state_name]
   set utility_changes lput (new_utility - old_utility) utility_changes
 end
 
-to decide-social-comparison ; look at friends
+to decide-social-comparison
 end
 
 to move
-
   (ifelse moveMethod = "patch" [
     let old_loc resident_state_name
     if resident_state_name != target_place [
@@ -715,10 +641,9 @@ to move
       set resident_state_name [state_name] of patch-here
       set moves moves + 1
       set total_moves total_moves + 1
+      set moves_count moves_count + 1
       set move_distances lput (distance one-of places with [name = old_loc]) move_distances
-      set satisfaction_levels lput get-satisfaction satisfaction_levels
     ]
-
     ]
     moveMethod = "place" [
       let old_loc resident_state_name
@@ -727,10 +652,9 @@ to move
         set resident_state_name myTarget
         move-to one-of patches with [state_name = myTarget]
         set moves moves + 1
-            ; Update metrics in batch
         set total_moves total_moves + 1
+        set moves_count moves_count + 1
         set move_distances lput (distance one-of places with [name = old_loc]) move_distances
-        set satisfaction_levels lput get-satisfaction satisfaction_levels
       ]
   ])
 end
@@ -741,9 +665,18 @@ to reset-metrics
   set at_home 0
   set total_satisfaction 0
   set total_uncertainty 0
+  set move_distances []
+  set satisfaction_levels []
+  set utility_changes []
+
+  set sum_satisfaction_shocked 0
+  set count_shocked 0
+  set sum_moves_shocked 0
+  set sum_satisfaction_not_shocked 0
+  set count_not_shocked 0
+  set sum_moves_not_shocked 0
 end
 
-; Setup experiment metrics
 to setup-experiment-metrics
   set total_moves 0
   set move_distances []
@@ -755,22 +688,43 @@ to setup-experiment-metrics
   set avg_move_distance 0
   set time_since_moves []
   set move_history table:make
+
+  reset-metrics
 end
 
 to compute-metrics
-
-  ;; moves is updated at agent level
-
-  ;; distances from home
   ask people [
-    let myHome home_state_name
-    set far_from_home far_from_home + distance (one-of places with [name = myHome])]
-  set far_from_home (far_from_home / (count people))
+    let current_satisfaction get-satisfaction
+    let current_uncertainty get-uncertainty
 
+    set total_satisfaction total_satisfaction + current_satisfaction
+    set total_uncertainty total_uncertainty + current_uncertainty
+    set satisfaction_levels lput current_satisfaction satisfaction_levels
 
-  ;; people at home
+    ifelse ever_shocked? [
+      set sum_satisfaction_shocked sum_satisfaction_shocked + current_satisfaction
+      set sum_moves_shocked sum_moves_shocked + moves_count
+      set count_shocked count_shocked + 1
+    ] [
+      set sum_satisfaction_not_shocked sum_satisfaction_not_shocked + current_satisfaction
+      set sum_moves_not_shocked sum_moves_not_shocked + moves_count
+      set count_not_shocked count_not_shocked + 1
+    ]
+  ]
+
+  ifelse count people > 0 [
+    ask people [
+      let myHome home_state_name
+      if any? places with [name = myHome] [
+         set far_from_home far_from_home + distance (one-of places with [name = myHome])
+      ]
+    ]
+    set far_from_home (far_from_home / (count people))
+  ] [
+    set far_from_home 0
+  ]
+
   set at_home count people with [resident_state_name = home_state_name]
-
 end
 
 to setup-migration-tracking
@@ -783,30 +737,23 @@ to setup-migration-tracking
 end
 
 to update-migration-metrics
-  ; Update yearly moves if we've completed a year (12 ticks)
   if ticks mod 12 = 0 [
     set yearly_moves moves
     set year_start_tick ticks
   ]
 
-  ; Track movement history and calculate metrics
   ask people [
     let current_location resident_state_name
     let history table:get move_history who
 
-    ; If location changed, update metrics
     if current_location != last history [
-      ; Add new location to history
       table:put move_history who (lput current_location history)
-
-      ; Calculate and update metrics
       update-move-metrics current_location history
     ]
   ]
 end
 
 to update-move-metrics [current_location history]
-  ; Calculate move distance
   let prev_location last history
   let move_dist distance one-of places with [name = prev_location]
   ifelse moves > 0 [
@@ -814,12 +761,10 @@ to update-move-metrics [current_location history]
   ][
     set avg_move_distance 0
   ]
-  ; Check for cyclical moves
   if length history >= 2 and member? current_location but-last history [
     set cyclical_moves cyclical_moves + 1
   ]
 
-  ; Track quality of life and income changes
   let old_qol mean [place_mean_q] of places with [name = prev_location]
   let new_qol mean [place_mean_q] of places with [name = current_location]
   let old_income mean [place_mean_i] of places with [name = prev_location]
@@ -1101,6 +1046,36 @@ max_memory
 20
 10.0
 1
+1
+NIL
+HORIZONTAL
+
+SLIDER
+916
+417
+1088
+450
+attachment_shock_magnitude
+attachment_shock_magnitude
+0
+1
+0.1
+0.01
+1
+NIL
+HORIZONTAL
+
+SLIDER
+916
+467
+1088
+500
+individual_shock_probability
+individual_shock_probability
+0
+0.1
+0.01
+0.001
 1
 NIL
 HORIZONTAL
@@ -1612,7 +1587,7 @@ Polygon -10899396 true false 195 90 225 75 245 75 260 89 269 108 261 124 240 105
 Polygon -10899396 true false 105 90 75 75 55 75 40 89 31 108 39 124 60 105 75 105 90 105
 Polygon -10899396 true false 132 85 134 64 107 51 108 17 150 2 192 18 192 52 169 65 172 87
 Polygon -10899396 true false 85 204 60 233 54 254 72 266 85 252 107 210
-Polygon -7500403 true true 119 75 179 75 209 101 224 135 220 225 175 261 128 261 81 224 74 135 88 99
+Polygon -7500403 true true 119 75 179 75 209 101 224 135 220 225 175 261 128 261 81 224 74 135
 
 wheel
 false
