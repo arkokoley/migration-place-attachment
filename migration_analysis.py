@@ -79,14 +79,19 @@ class ParameterSweepExperiment(BaseExperiment):
 
     def __init__(self, model_path: str):
         super().__init__(model_path)
-        # Define MINIMAL parameter ranges specific to testing shocks
+        # Define parameter ranges for both shock types
         self.param_ranges = {
-            # --- Varied Parameters ---
-            'individual_shock_probability': [0, 0.01], # Baseline vs Shock
-            'mean_attachment': [0.2, 0.8],          # Low vs High baseline attachment
-            'attachment_shock_magnitude': [0.1],      # Fixed shock strength
+            # --- Shock Parameters ---
+            'shock_type': ["none", "individual", "place"],  # Control which shock mechanism
+            'individual_shock_probability': [0, 0.01, 0.05],  # Include 0 for control
+            'attachment_shock_magnitude': [0.1, 0.5],  # Both individual & place use same magnitudes
+            'place_shock_probability': [0, 0.01, 0.05],
+            'place_shock_magnitude': [0.1, 0.5],
 
-            # --- Fixed Parameters (Ensure these match reasonable defaults) ---
+            # --- Key Parameters ---
+            'mean_attachment': np.linspace(0.2, 0.8, 4),  # Test range of attachments
+            
+            # --- Fixed Parameters ---
             'sd_attachment': [0.2],
             'attachment_form_rate': [0.019],
             'attachment_decay_rate': [0.02],
@@ -99,12 +104,33 @@ class ParameterSweepExperiment(BaseExperiment):
         }
 
     def _define_parameter_sets(self) -> List[Dict[str, Any]]:
-        """Generate parameter combinations for the sweep."""
-        param_names = list(self.param_ranges.keys())
-        # Ensure all values are lists for itertools.product
-        param_values = [v if isinstance(v, (list, np.ndarray)) else [v] for v in self.param_ranges.values()]
-        combinations = list(itertools.product(*param_values))
-        return [dict(zip(param_names, combo)) for combo in combinations]
+        """Generate parameter combinations, filtering invalid shock combinations."""
+        keys = self.param_ranges.keys()
+        values = self.param_ranges.values()
+        raw_combinations = list(itertools.product(*values))
+        
+        parameter_sets = []
+        for combo in raw_combinations:
+            param_set = dict(zip(keys, combo))
+            
+            # Filter based on shock_type to ensure consistent parameters
+            shock_type = param_set['shock_type']
+            if shock_type == "none":
+                param_set['individual_shock_probability'] = 0
+                param_set['place_shock_probability'] = 0
+                param_set['attachment_shock_magnitude'] = 0
+                param_set['place_shock_magnitude'] = 0
+            elif shock_type == "individual":
+                param_set['place_shock_probability'] = 0
+                param_set['place_shock_magnitude'] = 0
+            elif shock_type == "place":
+                param_set['individual_shock_probability'] = 0
+                param_set['attachment_shock_magnitude'] = 0
+                
+            parameter_sets.append(param_set)
+        
+        # Remove duplicates
+        return [dict(t) for t in {tuple(d.items()) for d in parameter_sets}]
 
     def _get_metrics_to_collect(self) -> Dict[str, str]:
         """Define MINIMAL metrics for testing shocks."""
@@ -164,10 +190,65 @@ class ParameterSweepExperiment(BaseExperiment):
         except Exception as e:
             print(f"Error generating RCT plots: {e}")
 
-    # --- Helper methods ---
-    # Keep _export_for_matlab, _analyze_random_forest, _visualize_place_attachment_effects,
-    # _analyze_migration_patterns, and _visualize_shock_effect_rct definitions as they are,
-    # just the calls to them are commented out above.
+    def _visualize_shock_effect_rct(self, results_df: pd.DataFrame):
+        """Visualize RCT effects comparing individual and place shocks across attachment levels."""
+        if not all(col in results_df.columns for col in ['shock_type', 'mean_attachment']):
+            print("Warning: Missing required columns for RCT visualization")
+            return None
+
+        # Create figure with 2 subplots (satisfaction and moves)
+        fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(12, 10))
+
+        # Process data for each shock type
+        for shock_type in ['individual', 'place']:
+            shock_data = results_df[results_df['shock_type'] == shock_type].copy()
+            if shock_data.empty:
+                continue
+
+            # Calculate effect sizes
+            shock_data['satisfaction_effect'] = shock_data['avg_satisfaction_shocked'] - shock_data['avg_satisfaction_not_shocked']
+            shock_data['moves_effect'] = shock_data['avg_moves_shocked'] - shock_data['avg_moves_not_shocked']
+
+            # Group by attachment level and calculate mean effects
+            grouped = shock_data.groupby('mean_attachment').agg({
+                'satisfaction_effect': ['mean', 'std'],
+                'moves_effect': ['mean', 'std']
+            }).reset_index()
+
+            # Plot satisfaction effects
+            ax1.errorbar(grouped['mean_attachment'], 
+                        grouped['satisfaction_effect']['mean'],
+                        yerr=grouped['satisfaction_effect']['std'],
+                        label=f'{shock_type.title()} Shock',
+                        marker='o',
+                        capsize=5)
+
+            # Plot movement effects
+            ax2.errorbar(grouped['mean_attachment'], 
+                        grouped['moves_effect']['mean'],
+                        yerr=grouped['moves_effect']['std'],
+                        label=f'{shock_type.title()} Shock',
+                        marker='o',
+                        capsize=5)
+
+        # Customize satisfaction plot
+        ax1.set_title('Shock Effects on Satisfaction by Attachment Level')
+        ax1.set_xlabel('Mean Attachment Level')
+        ax1.set_ylabel('Satisfaction Effect\n(Shocked - Not Shocked)')
+        ax1.axhline(y=0, color='gray', linestyle='--', alpha=0.5)
+        ax1.legend()
+        ax1.grid(True, alpha=0.3)
+
+        # Customize moves plot
+        ax2.set_title('Shock Effects on Movement by Attachment Level')
+        ax2.set_xlabel('Mean Attachment Level')
+        ax2.set_ylabel('Movement Effect\n(Shocked - Not Shocked)')
+        ax2.axhline(y=0, color='gray', linestyle='--', alpha=0.5)
+        ax2.legend()
+        ax2.grid(True, alpha=0.3)
+
+        plt.tight_layout()
+        return fig
 
     def _export_for_matlab(self, results_df: pd.DataFrame, output_dir: str):
         """Exports data in a format suitable for the MATLAB RF script."""
@@ -223,14 +304,13 @@ class ParameterSweepExperiment(BaseExperiment):
             # all_inputs = np.nan_to_num(all_inputs)
             # all_metrics = np.nan_to_num(all_metrics)
 
-        # Save .mat file
         timestamp = os.path.basename(output_dir).replace('results_', '')
         mat_file_path = os.path.join(output_dir, f'PA_Sensitivity_Results_{timestamp}.mat')
         try:
             sio.savemat(mat_file_path, {
                 'allInputs': all_inputs,
                 'allMetrics': all_metrics,
-                'inputNames': np.array(input_names_matlab, dtype=object), # Use dtype=object for strings
+                'inputNames': np.array(input_names_matlab, dtype=object),
                 'metricNames': np.array(metric_names_matlab, dtype=object)
             })
         except Exception as e:
@@ -478,65 +558,6 @@ class ParameterSweepExperiment(BaseExperiment):
         ax4.set_title('Network Effects and Place Attachment')
         ax4.set_xlabel('Mean Initiate Probability')
         ax4.set_ylabel('Total Moves')
-
-        plt.tight_layout()
-        return fig
-
-
-    def _visualize_shock_effect_rct(self, results_df: pd.DataFrame):
-        """Visualize the difference-in-difference / RCT effect of shocks."""
-        fig, axes = plt.subplots(1, 2, figsize=(12, 5), sharey=False) # Allow different y-axes
-
-        # Filter for runs where shocks were possible and data exists
-        rct_cols = [
-            'individual_shock_probability',
-            'avg_satisfaction_shocked', 'avg_satisfaction_not_shocked',
-            'avg_moves_shocked', 'avg_moves_not_shocked'
-        ]
-        if not all(col in results_df.columns for col in rct_cols):
-             print("Warning: Missing required columns for RCT visualization.")
-             # Draw empty plots
-             axes[0].set_title('Shock Effect on Satisfaction (Missing Data)')
-             axes[1].set_title('Shock Effect on Moves (Missing Data)')
-             plt.tight_layout()
-             return fig
-
-        rct_df = results_df[results_df['individual_shock_probability'] > 0].copy()
-        rct_df.dropna(subset=rct_cols, inplace=True)
-
-
-        if rct_df.empty:
-            print("Warning: No valid data for RCT visualization (need runs with shock_prob > 0 and valid RCT metrics).")
-            # Draw empty plots
-            axes[0].set_title('Shock Effect on Satisfaction (No Data)')
-            axes[1].set_title('Shock Effect on Moves (No Data)')
-            plt.tight_layout()
-            return fig
-
-        # Calculate the difference (Shocked - Not Shocked)
-        rct_df['satisfaction_diff'] = rct_df['avg_satisfaction_shocked'] - rct_df['avg_satisfaction_not_shocked']
-        rct_df['moves_diff'] = rct_df['avg_moves_shocked'] - rct_df['avg_moves_not_shocked']
-
-        # Ensure shock probability is categorical for plotting
-        rct_df['shock_prob_cat'] = pd.Categorical(rct_df['individual_shock_probability'])
-
-        # Plot 1: Effect on Satisfaction
-        sns.barplot(data=rct_df, x='shock_prob_cat', y='satisfaction_diff', ax=axes[0], errorbar='sd', capsize=.1)
-        axes[0].set_title('Shock Effect (ATE) on Agent Satisfaction')
-        axes[0].set_xlabel('Individual Shock Probability')
-        axes[0].set_ylabel('Avg Satisfaction Difference\n(Shocked - Not Shocked)')
-        axes[0].axhline(0, color='grey', linestyle='--')
-        axes[0].tick_params(axis='x', rotation=45)
-
-
-        # Plot 2: Effect on Moves
-        sns.barplot(data=rct_df, x='shock_prob_cat', y='moves_diff', ax=axes[1], errorbar='sd', capsize=.1)
-        axes[1].set_title('Shock Effect (ATE) on Agent Moves')
-        axes[1].set_xlabel('Individual Shock Probability')
-        axes[1].set_ylabel('Avg Moves Difference\n(Shocked - Not Shocked)')
-        axes[1].axhline(0, color='grey', linestyle='--')
-        axes[1].tick_params(axis='x', rotation=45)
-
 
         plt.tight_layout()
         return fig

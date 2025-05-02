@@ -26,6 +26,11 @@ globals [
   satisfaction_levels  ; List of satisfaction levels (per agent per tick)
   utility_changes      ; List of utility changes
 
+  ; Shock Parameters
+  ;place_shock_probability
+  ;place_shock_magnitude
+  ;shock_type ; String: "individual", "place", "none"
+
   ; RCT Metrics Tracking
   sum_satisfaction_shocked
   count_shocked
@@ -43,7 +48,7 @@ people-own [
   home_state home_state_name resident_state_name class
   attachment_level attachment preferences observations layer_observations
   pInitiate decisionType satisfied? uncertain? target_place
-  ever_shocked? ; Boolean: TRUE if agent ever experienced an individual shock
+  ever_shocked? ; Boolean: TRUE if agent ever experienced ANY shock (individual or place)
   moves_count   ; Integer: Total moves made by this agent
 ]
 places-own [name place_location place_mean_q place_sd_q place_a place_mean_i place_sd_i admin_level]
@@ -124,7 +129,14 @@ to setup
 end
 
 to go
-  apply-individual-shocks
+  ; Apply shocks based on shock_type
+  if shock_type = "individual" [
+    apply-individual-shocks
+  ]
+  if shock_type = "place" [
+    apply-place-shocks
+  ]
+  ; If shock_type is "none", no shocks are applied
 
   ;;update any time functions
   ask people [update-place-attachment]
@@ -147,7 +159,20 @@ to apply-individual-shocks
   ask people [
     if random-float 1.0 < individual_shock_probability [
       table:put attachment resident_state_name attachment_shock_magnitude
-      set ever_shocked? TRUE
+      set ever_shocked? TRUE ; Mark as shocked
+    ]
+  ]
+end
+
+; Modified procedure for place-level shocks
+to apply-place-shocks
+  ask places [
+    if random-float 1.0 < place_shock_probability [
+      ; Apply shock to all people currently at this place
+      ask people-here [
+        table:put attachment resident_state_name place_shock_magnitude
+        set ever_shocked? TRUE ; Mark as shocked (same flag as individual)
+      ]
     ]
   ]
 end
@@ -701,6 +726,8 @@ to compute-metrics
     set total_uncertainty total_uncertainty + current_uncertainty
     set satisfaction_levels lput current_satisfaction satisfaction_levels
 
+    ; Accumulate RCT metrics based ONLY on ever_shocked? flag
+    ; (The shock_type parameter still determines WHICH shock procedure runs in 'go')
     ifelse ever_shocked? [
       set sum_satisfaction_shocked sum_satisfaction_shocked + current_satisfaction
       set sum_moves_shocked sum_moves_shocked + moves_count
@@ -1080,6 +1107,36 @@ individual_shock_probability
 NIL
 HORIZONTAL
 
+SLIDER
+916
+517
+1088
+550
+place_shock_probability
+place_shock_probability
+0
+0.1
+0.0
+0.001
+1
+NIL
+HORIZONTAL
+
+SLIDER
+916
+567
+1088
+600
+place_shock_magnitude
+place_shock_magnitude
+0
+1
+0.1
+0.01
+1
+NIL
+HORIZONTAL
+
 BUTTON
 111
 415
@@ -1231,6 +1288,16 @@ CHOOSER
 moveMethod
 moveMethod
 "patch" "place"
+1
+
+CHOOSER
+1243
+280
+1381
+325
+shock_type
+shock_type
+"none" "individual" "place"
 1
 
 PLOT
