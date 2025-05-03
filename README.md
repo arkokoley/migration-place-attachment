@@ -106,6 +106,54 @@ This script contains the `MigrationAnalyzer` class, which handles the entire ana
 
 This NetLogo model defines the simulation environment, including agents (people and places), their properties, and behaviors. The model includes procedures for setting up the simulation, running it, and reporting results.
 
+## Shock Analysis Tools
+
+### Shock Visualization Module (`shock_visualization.py`)
+
+A standalone module for visualizing shock effects across different attachment levels. This module can be used independently of the main analysis pipeline.
+
+```python
+from shock_visualization import visualize_shock_effects
+
+# Save visualization to file
+visualize_shock_effects('experiment_data.json', 'shock_effects.png')
+
+# Or get figure object for further customization
+fig = visualize_shock_effects('experiment_data.json')
+```
+
+#### Input Data Format
+The module accepts JSON or CSV files with the following structure:
+
+```json
+{
+    "experiments": [
+        {
+            "shock_type": "individual|place",
+            "mean_attachment": <float>,
+            "avg_satisfaction_shocked": <float>,
+            "avg_satisfaction_not_shocked": <float>,
+            "avg_moves_shocked": <float>,
+            "avg_moves_not_shocked": <float>,
+            "n_shocked": <int>,
+            "n_not_shocked": <int>
+        }
+    ],
+    "metadata": {
+        "date": "YYYY-MM-DD",
+        "shock_probability": {"individual": <float>, "place": <float>},
+        "shock_magnitude": {"individual": <float>, "place": <float>}
+    }
+}
+```
+
+For CSV format, include the same fields as columns.
+
+#### Command Line Usage
+```bash
+python shock_visualization.py data.json -o shock_effects.png
+```
+
 ## Troubleshooting
 
 * Ensure that NetLogo is correctly installed and the path to the NetLogo executable is correctly set in your environment.

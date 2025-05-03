@@ -70,6 +70,21 @@ This project simulates and analyzes human migration patterns using a NetLogo age
 - **Analysis:** Performs Random Forest analysis to determine variable importance.
 - **Visualization:** Generates plots related to the Random Forest results.
 
+### 7. Shock Visualization Module (`shock_visualization.py`)
+- **Purpose:** Standalone visualization tool for shock effects analysis
+- **Key Features:**
+  - Framework-agnostic: Works with any data source that provides correctly formatted input
+  - Supports both JSON and CSV input formats
+  - Generates comparative visualizations of individual vs. place shock effects
+  - Includes error bars and statistical summaries
+- **Input Requirements:**
+  - Required fields: shock_type, mean_attachment, avg_satisfaction_shocked, avg_satisfaction_not_shocked, avg_moves_shocked, avg_moves_not_shocked
+  - Optional metadata: shock probabilities, magnitudes, dates, sample sizes
+- **Output:**
+  - Two-panel figure comparing satisfaction and movement effects
+  - Optional automatic file saving
+  - Returnable figure object for further customization
+
 ## Analysis Pipeline
 
 1.  **Instantiate Experiment:** Create an instance of the desired experiment class (`ParameterSweepExperiment`, `ComplexityAnalysisExperiment`, `OFATExperiment`), providing the model path.
@@ -83,6 +98,53 @@ This project simulates and analyzes human migration patterns using a NetLogo age
 6.  **Generate Visualizations:** `BaseExperiment.run_experiments` calls the subclass's `visualize_results` method to create plots specific to the experiment type. Plots are saved.
 7.  **Export for External Analysis:** `ParameterSweepExperiment` exports data in `.mat` format for MATLAB Random Forest analysis.
 8.  **External Analysis (Optional):** Run `random_forrest.m` in MATLAB using the exported `.mat` file.
+
+### Shock Analysis Data Format
+
+1. **JSON Structure:**
+```json
+{
+    "experiments": [
+        {
+            "shock_type": "individual|place",
+            "mean_attachment": <float>,
+            "avg_satisfaction_shocked": <float>,
+            "avg_satisfaction_not_shocked": <float>,
+            "avg_moves_shocked": <float>,
+            "avg_moves_not_shocked": <float>,
+            "n_shocked": <int>,
+            "n_not_shocked": <int>
+        }
+    ],
+    "metadata": {
+        "date": "YYYY-MM-DD",
+        "shock_probability": {
+            "individual": <float>,
+            "place": <float>
+        },
+        "shock_magnitude": {
+            "individual": <float>,
+            "place": <float>
+        }
+    }
+}
+```
+
+2. **CSV Alternative:**
+   - Required columns match JSON experiment fields
+   - One row per experimental condition
+   - Headers must exactly match field names
+   - Metadata can be included as additional columns
+
+3. **Field Descriptions:**
+   - `shock_type`: Either "individual" or "place"
+   - `mean_attachment`: Base attachment level (0-1)
+   - `avg_satisfaction_shocked`: Mean satisfaction of shocked agents
+   - `avg_satisfaction_not_shocked`: Mean satisfaction of non-shocked agents
+   - `avg_moves_shocked`: Mean moves per shocked agent
+   - `avg_moves_not_shocked`: Mean moves per non-shocked agent
+   - `n_shocked`: Number of agents in shocked group
+   - `n_not_shocked`: Number of agents in control group
 
 ## Technical Details
 
