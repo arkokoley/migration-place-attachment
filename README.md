@@ -29,15 +29,18 @@ This project performs a migration analysis using a NetLogo model to simulate mig
 
 ## Files
 
-* [migration-analysis.py](vscode-file://vscode-app/c:/Users/arkok/AppData/Local/Programs/Microsoft%20VS%20Code/resources/app/out/vs/code/electron-sandbox/workbench/workbench.html): Main Python script to run the migration analysis.
-* [migration_place_attachment_model.nlogo](vscode-file://vscode-app/c:/Users/arkok/AppData/Local/Programs/Microsoft%20VS%20Code/resources/app/out/vs/code/electron-sandbox/workbench/workbench.html): NetLogo model file defining the migration simulation.
-* [README.md](vscode-file://vscode-app/c:/Users/arkok/AppData/Local/Programs/Microsoft%20VS%20Code/resources/app/out/vs/code/electron-sandbox/workbench/workbench.html): This readme file.
+* `migration-analysis.py`: Main Python script to run the migration analysis
+* `migration_place_attachment_model.nlogo`: NetLogo model file defining the migration simulation
+* `shock_visualization.py`: Standalone module for visualizing shock effects
+* `analyze_shock_interactions.py`: Script for analyzing shock interaction effects
+* `README.md`: This readme file
+* `spec.md`: Technical specification and implementation details
 
 ## Usage
 
 1. **Prepare the NetLogo model** :
 
-* Ensure the [migration_place_attachment_model.nlogo](vscode-file://vscode-app/c:/Users/arkok/AppData/Local/Programs/Microsoft%20VS%20Code/resources/app/out/vs/code/electron-sandbox/workbench/workbench.html) file is in the same directory as the [migration-analysis.py](vscode-file://vscode-app/c:/Users/arkok/AppData/Local/Programs/Microsoft%20VS%20Code/resources/app/out/vs/code/electron-sandbox/workbench/workbench.html) script.
+* Ensure the `migration_place_attachment_model.nlogo` file is in the same directory as the `migration-analysis.py` script.
 
 1. **Run the analysis** :
 
@@ -64,7 +67,7 @@ The script will perform the following steps:
 
 ## Code Overview
 
-### [migration-analysis.py](vscode-file://vscode-app/c:/Users/arkok/AppData/Local/Programs/Microsoft%20VS%20Code/resources/app/out/vs/code/electron-sandbox/workbench/workbench.html)
+### `migration-analysis.py`
 
 This script contains the `MigrationAnalyzer` class, which handles the entire analysis process:
 
@@ -102,24 +105,34 @@ This script contains the `MigrationAnalyzer` class, which handles the entire ana
   analyzer.cleanup()
 ```
 
-### [migration_place_attachment_model.nlogo](vscode-file://vscode-app/c:/Users/arkok/AppData/Local/Programs/Microsoft%20VS%20Code/resources/app/out/vs/code/electron-sandbox/workbench/workbench.html)
+### `migration_place_attachment_model.nlogo`
 
 This NetLogo model defines the simulation environment, including agents (people and places), their properties, and behaviors. The model includes procedures for setting up the simulation, running it, and reporting results.
 
 ## Shock Analysis Tools
 
 ### Shock Visualization Module (`shock_visualization.py`)
+A standalone module for visualizing shock effects across different attachment levels. The module is framework-agnostic and can be used with any data source that follows the specified format.
 
-A standalone module for visualizing shock effects across different attachment levels. This module can be used independently of the main analysis pipeline.
+**Key Features:**
+- Independent from main simulation pipeline
+- Supports both JSON and CSV input formats
+- Generates comparative visualizations of individual vs place shock effects
+- Includes error bars and statistical summaries
+- Command-line interface for batch processing
+- Importable as a Python module for custom analysis workflows
 
+**Usage Examples:**
 ```python
 from shock_visualization import visualize_shock_effects
 
-# Save visualization to file
+# Basic usage - save to file
 visualize_shock_effects('experiment_data.json', 'shock_effects.png')
 
-# Or get figure object for further customization
+# Advanced usage - get figure for customization
 fig = visualize_shock_effects('experiment_data.json')
+fig.axes[0].set_title('Custom Title')
+fig.savefig('custom_shock_effects.png')
 ```
 
 #### Input Data Format
@@ -153,29 +166,6 @@ For CSV format, include the same fields as columns.
 ```bash
 python shock_visualization.py data.json -o shock_effects.png
 ```
-
-## Troubleshooting
-
-* Ensure that NetLogo is correctly installed and the path to the NetLogo executable is correctly set in your environment.
-* Verify that all required Python packages are installed.
-* Check for any error messages in the console and address them accordingly.
-
-## Contributing
-
-Contributions are welcome! Please fork the repository and submit a pull request with your changes.
-
-## License
-
-This project is licensed under the MIT License. See the LICENSE file for details.
-
-## Acknowledgements
-
-* NetLogo: [NetLogo](vscode-file://vscode-app/c:/Users/arkok/AppData/Local/Programs/Microsoft%20VS%20Code/resources/app/out/vs/code/electron-sandbox/workbench/workbench.html)
-* Python: [Python](vscode-file://vscode-app/c:/Users/arkok/AppData/Local/Programs/Microsoft%20VS%20Code/resources/app/out/vs/code/electron-sandbox/workbench/workbench.html)
-
-For any questions or issues, please open an issue on the GitHub repository.
-
-## Analysis Scripts
 
 ### Shock Interaction Analysis (`analyze_shock_interactions.py`)
 
@@ -235,3 +225,24 @@ Before running, **edit `analyze_shock_interactions.py`** and configure the follo
 *   Inside the output directory:
     *   One PNG image file (`shock_interaction_group_*.png`) for each unique combination of the automatically identified parameters, where `*` is a numerical index. Each plot shows the interaction effect of shocks and attachment on satisfaction and moves for that specific parameter setting.
     *   A CSV file named `group_parameter_mapping.csv` that links each `group_index` (used in the PNG filenames) to the specific parameter values defining that group.
+
+## Troubleshooting
+
+* Ensure that NetLogo is correctly installed and the path to the NetLogo executable is correctly set in your environment.
+* Verify that all required Python packages are installed.
+* Check for any error messages in the console and address them accordingly.
+
+## Contributing
+
+Contributions are welcome! Please fork the repository and submit a pull request with your changes.
+
+## License
+
+This project is licensed under the MIT License. See the LICENSE file for details.
+
+## Acknowledgements
+
+* NetLogo: [NetLogo](vscode-file://vscode-app/c:/Users/arkok/AppData/Local/Programs/Microsoft%20VS%20Code/resources/app/out/vs/code/electron-sandbox/workbench/workbench.html)
+* Python: [Python](vscode-file://vscode-app/c:/Users/arkok/AppData/Local/Programs/Microsoft%20VS%20Code/resources/app/out/vs/code/electron-sandbox/workbench/workbench.html)
+
+For any questions or issues, please open an issue on the GitHub repository.

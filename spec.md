@@ -71,19 +71,93 @@ This project simulates and analyzes human migration patterns using a NetLogo age
 - **Visualization:** Generates plots related to the Random Forest results.
 
 ### 7. Shock Visualization Module (`shock_visualization.py`)
-- **Purpose:** Standalone visualization tool for shock effects analysis
-- **Key Features:**
-  - Framework-agnostic: Works with any data source that provides correctly formatted input
-  - Supports both JSON and CSV input formats
-  - Generates comparative visualizations of individual vs. place shock effects
-  - Includes error bars and statistical summaries
-- **Input Requirements:**
-  - Required fields: shock_type, mean_attachment, avg_satisfaction_shocked, avg_satisfaction_not_shocked, avg_moves_shocked, avg_moves_not_shocked
-  - Optional metadata: shock probabilities, magnitudes, dates, sample sizes
-- **Output:**
-  - Two-panel figure comparing satisfaction and movement effects
-  - Optional automatic file saving
-  - Returnable figure object for further customization
+- **Core Analysis Tool:** Framework-agnostic visualization of shock effects
+- **Module Design:**
+  - Single-responsibility module focused on shock effect visualization
+  - Flexible input handling (JSON/CSV)
+  - Error-resistant data processing
+  - Configurable output formats
+- **Key Functions:**
+  ```python
+  def visualize_shock_effects(data_path: str, output_path: Optional[str] = None) -> Optional[plt.Figure]
+  def load_shock_data(data_path: str) -> pd.DataFrame
+  def calculate_shock_effects(df: pd.DataFrame) -> pd.DataFrame
+  def plot_shock_effects(df: pd.DataFrame) -> plt.Figure
+  ```
+- **Integration Points:**
+  - Direct command-line usage for quick analysis
+  - Importable module for custom analysis pipelines
+  - Compatible with ParameterSweepExperiment output
+  - Extensible for additional shock metrics
+
+### Data Exchange Specifications
+
+#### 1. Shock Analysis Data Format
+- **Purpose:** Standardized format for shock effect analysis across tools
+- **Supported Formats:**
+  - JSON (preferred for metadata support)
+  - CSV (simpler format for basic analysis)
+  
+**JSON Schema:**
+```json
+{
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "type": "object",
+    "required": ["experiments"],
+    "properties": {
+        "experiments": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "required": [
+                    "shock_type",
+                    "mean_attachment",
+                    "avg_satisfaction_shocked",
+                    "avg_satisfaction_not_shocked",
+                    "avg_moves_shocked",
+                    "avg_moves_not_shocked"
+                ],
+                "properties": {
+                    "shock_type": {"enum": ["individual", "place"]},
+                    "mean_attachment": {"type": "number"},
+                    "avg_satisfaction_shocked": {"type": "number"},
+                    "avg_satisfaction_not_shocked": {"type": "number"},
+                    "avg_moves_shocked": {"type": "number"},
+                    "avg_moves_not_shocked": {"type": "number"},
+                    "n_shocked": {"type": "integer"},
+                    "n_not_shocked": {"type": "integer"}
+                }
+            }
+        },
+        "metadata": {
+            "type": "object",
+            "properties": {
+                "date": {"type": "string", "format": "date"},
+                "shock_probability": {
+                    "type": "object",
+                    "properties": {
+                        "individual": {"type": "number"},
+                        "place": {"type": "number"}
+                    }
+                },
+                "shock_magnitude": {
+                    "type": "object",
+                    "properties": {
+                        "individual": {"type": "number"},
+                        "place": {"type": "number"}
+                    }
+                }
+            }
+        }
+    }
+}
+```
+
+**CSV Requirements:**
+- Header row required
+- Column names must match JSON field names
+- Missing values should be marked as NA/NaN
+- Optional metadata columns with prefix "meta_"
 
 ## Analysis Pipeline
 
