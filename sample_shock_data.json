@@ -1,0 +1,56 @@
+{
+    "experiments": [
+        {
+            "shock_type": "individual",
+            "mean_attachment": 0.2,
+            "avg_satisfaction_shocked": 0.65,
+            "avg_satisfaction_not_shocked": 0.75,
+            "avg_moves_shocked": 3.2,
+            "avg_moves_not_shocked": 2.8,
+            "n_shocked": 150,
+            "n_not_shocked": 350
+        },
+        {
+            "shock_type": "individual",
+            "mean_attachment": 0.4,
+            "avg_satisfaction_shocked": 0.70,
+            "avg_satisfaction_not_shocked": 0.85,
+            "avg_moves_shocked": 2.8,
+            "avg_moves_not_shocked": 2.5,
+            "n_shocked": 140,
+            "n_not_shocked": 360
+        },
+        {
+            "shock_type": "place",
+            "mean_attachment": 0.2,
+            "avg_satisfaction_shocked": 0.60,
+            "avg_satisfaction_not_shocked": 0.75,
+            "avg_moves_shocked": 3.5,
+            "avg_moves_not_shocked": 2.8,
+            "n_shocked": 200,
+            "n_not_shocked": 300
+        },
+        {
+            "shock_type": "place",
+            "mean_attachment": 0.4,
+            "avg_satisfaction_shocked": 0.65,
+            "avg_satisfaction_not_shocked": 0.85,
+            "avg_moves_shocked": 3.2,
+            "avg_moves_not_shocked": 2.5,
+            "n_shocked": 180,
+            "n_not_shocked": 320
+        }
+    ],
+    "metadata": {
+        "date": "2024-01-20",
+        "total_agents": 500,
+        "shock_probability": {
+            "individual": 0.01,
+            "place": 0.01
+        },
+        "shock_magnitude": {
+            "individual": 0.1,
+            "place": 0.1
+        }
+    }
+}
